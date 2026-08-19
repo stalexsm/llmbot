@@ -1,0 +1,18 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.ty/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
