@@ -14,7 +14,6 @@ import httpx
 import structlog
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
-from aiohttp import ClientTimeout
 
 from bot.application.service import ApplicationService
 from bot.config.settings import Settings
@@ -64,9 +63,9 @@ async def run() -> None:
             logger=logger,
         )
 
-        session = AiohttpSession(
-            timeout=ClientTimeout(total=settings.telegram_timeout_seconds),
-        )
+        # aiogram expects a plain numeric timeout here: during polling it
+        # computes `session.timeout + polling_timeout` for long-poll requests.
+        session = AiohttpSession(timeout=settings.telegram_timeout_seconds)
         bot = Bot(
             token=settings.telegram_bot_token.get_secret_value(),
             session=session,
