@@ -10,6 +10,7 @@ from pathlib import Path
 
 import structlog
 
+from bot.application.errors import SessionStorageError
 from bot.domain.ids import TelegramChatId
 from bot.domain.messages import InferenceMessage, MessageRole
 
@@ -26,10 +27,13 @@ class ChatSessionStore:
         session_file = self._file_for(chat_id)
         if not session_file.exists():
             return ()
+        try:
+            raw_lines = session_file.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            self._logger.warning("session_storage_failed", chat_id=chat_id, operation="load")
+            raise SessionStorageError("Failed to read the chat session") from exc
         messages: list[InferenceMessage] = []
-        for line_number, line in enumerate(
-            session_file.read_text(encoding="utf-8").splitlines(), start=1
-        ):
+        for line_number, line in enumerate(raw_lines, start=1):
             if not line.strip():
                 continue
             message = self._parse_line(line)
@@ -48,24 +52,32 @@ class ChatSessionStore:
 
     def append(self, chat_id: TelegramChatId, *messages: InferenceMessage) -> None:
         """Дописать сообщения в конец сессии одной записью (атомарно на уровне вызова)."""
-        if not messages:
+        persisted = [message for message in messages if message.role is not MessageRole.SYSTEM]
+        if not persisted:
             return
-        self._directory.mkdir(parents=True, exist_ok=True)
         payload = "".join(
             json.dumps(
                 {"role": message.role.value, "content": message.content},
                 ensure_ascii=False,
             )
             + "\n"
-            for message in messages
+            for message in persisted
         )
-        with self._file_for(chat_id).open("a", encoding="utf-8") as session_file:
-            session_file.write(payload)
+        try:
+            self._directory.mkdir(parents=True, exist_ok=True)
+            with self._file_for(chat_id).open("a", encoding="utf-8") as session_file:
+                session_file.write(payload)
+        except OSError as exc:
+            self._logger.warning("session_storage_failed", chat_id=chat_id, operation="append")
+            raise SessionStorageError("Failed to append to the chat session") from exc
 
     def reset(self, chat_id: TelegramChatId) -> None:
         """Обнулить сессию: история отбрасывается (команда /new)."""
-        session_file = self._file_for(chat_id)
-        session_file.write_text("", encoding="utf-8")
+        try:
+            self._file_for(chat_id).write_text("", encoding="utf-8")
+        except OSError as exc:
+            self._logger.warning("session_storage_failed", chat_id=chat_id, operation="reset")
+            raise SessionStorageError("Failed to reset the chat session") from exc
 
     def _file_for(self, chat_id: TelegramChatId) -> Path:
         return self._directory / f"{chat_id}.jsonl"

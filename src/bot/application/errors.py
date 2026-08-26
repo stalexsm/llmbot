@@ -24,3 +24,7 @@ class InferenceUnavailableError(InferenceError):
 
 class EmptyInferenceResponseError(InferenceError):
     """The inference provider returned an empty response."""
+
+
+class SessionStorageError(ApplicationError):
+    """Чат-сессия недоступна: дисковая операция с файлом сессии не удалась."""

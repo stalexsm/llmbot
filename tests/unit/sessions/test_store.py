@@ -2,8 +2,10 @@
 
 from pathlib import Path
 
+import pytest
 import structlog.stdlib
 
+from bot.application.errors import SessionStorageError
 from bot.domain.ids import TelegramChatId
 from bot.domain.messages import InferenceMessage, MessageRole
 from bot.sessions.store import ChatSessionStore
@@ -96,3 +98,45 @@ def test_load_does_not_return_system_messages(
     )
 
     assert store.load(CHAT) == (InferenceMessage(role=MessageRole.USER, content="вопрос"),)
+
+
+def test_append_does_not_write_system_messages(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    store = make_store(tmp_path, logger)
+
+    store.append(
+        CHAT,
+        InferenceMessage(role=MessageRole.SYSTEM, content="system prompt"),
+        InferenceMessage(role=MessageRole.USER, content="вопрос"),
+    )
+
+    # Читаем сырой файл: системное сообщение не должно быть записано вовсе.
+    raw = (tmp_path / "100.jsonl").read_text(encoding="utf-8")
+    assert "system prompt" not in raw
+    assert '"user"' in raw
+
+
+def test_storage_failures_map_to_application_error(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    blocker = tmp_path / "blocker"
+    blocker.write_text("не каталог", encoding="utf-8")
+    store = ChatSessionStore(directory=blocker / "chats", logger=logger)
+
+    with pytest.raises(SessionStorageError):
+        store.append(CHAT, InferenceMessage(role=MessageRole.USER, content="вопрос"))
+    with pytest.raises(SessionStorageError):
+        store.reset(CHAT)
+
+
+def test_load_failure_maps_to_application_error(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    session_file = tmp_path / "100.jsonl"
+    session_file.mkdir()  # каталог вместо файла: read_text упадёт с OSError
+
+    store = make_store(tmp_path, logger)
+
+    with pytest.raises(SessionStorageError):
+        store.load(CHAT)

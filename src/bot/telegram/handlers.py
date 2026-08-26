@@ -42,7 +42,16 @@ class TelegramHandlers:
         await message.answer(_START_TEXT)
 
     async def handle_new(self, message: Message) -> None:
-        await self._service.reset_session(TelegramChatId(message.chat.id))
+        try:
+            await self._service.reset_session(TelegramChatId(message.chat.id))
+        except ApplicationError:
+            self._logger.error(
+                "session_reset_failed",
+                chat_id=message.chat.id,
+                status="error",
+            )
+            await message.answer(_ERROR_TEXT)
+            return
         self._logger.info("new_command_received", chat_id=message.chat.id)
         await message.answer(_NEW_CHAT_TEXT)
 

@@ -155,3 +155,23 @@ async def test_router_routes_new_command_to_reset(
     await dispatcher.feed_update(bot, update)
 
     assert sent_message(request_mock).text == handlers_module._NEW_CHAT_TEXT
+
+
+async def test_new_command_failure_converted_to_safe_message(
+    bot: Bot,
+    logger: structlog.stdlib.BoundLogger,
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from bot.application.errors import InferenceUnavailableError
+
+    service = make_service(logger, MockInferenceProvider(), tmp_path)
+    monkeypatch.setattr(
+        service, "reset_session", AsyncMock(side_effect=InferenceUnavailableError("down"))
+    )
+    handlers = make_handlers(logger, service)
+    request_mock = mock_telegram_api(bot, monkeypatch)
+
+    await handlers.handle_new(make_telegram_message("/new").as_(bot))  # must not raise
+
+    assert sent_message(request_mock).text == handlers_module._ERROR_TEXT
