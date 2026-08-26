@@ -1,0 +1,83 @@
+"""Файловое хранилище чат-сессий (JSONL, append-only).
+
+Одна чат-сессия — один файл ``<chat_id>.jsonl`` в каталоге данных; строка
+файла — одно сообщение. Системный промпт сессии не принадлежит хранилищу:
+он собирается заново при каждом запросе и на диске не живёт.
+"""
+
+import json
+from pathlib import Path
+
+import structlog
+
+from bot.domain.ids import TelegramChatId
+from bot.domain.messages import InferenceMessage, MessageRole
+
+
+class ChatSessionStore:
+    """Persisted history of chat sessions, one JSONL file per chat."""
+
+    def __init__(self, directory: Path, logger: structlog.stdlib.BoundLogger) -> None:
+        self._directory = directory
+        self._logger = logger.bind(component="chat_session_store")
+
+    def load(self, chat_id: TelegramChatId) -> tuple[InferenceMessage, ...]:
+        """Прочитать историю сессии, пропуская битые строки и системные сообщения."""
+        session_file = self._file_for(chat_id)
+        if not session_file.exists():
+            return ()
+        messages: list[InferenceMessage] = []
+        for line_number, line in enumerate(
+            session_file.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            if not line.strip():
+                continue
+            message = self._parse_line(line)
+            if message is None:
+                self._logger.warning(
+                    "session_line_skipped",
+                    chat_id=chat_id,
+                    line=line_number,
+                )
+                continue
+            if message.role is MessageRole.SYSTEM:
+                # Системный промпт не хранится: собирается заново при запросе.
+                continue
+            messages.append(message)
+        return tuple(messages)
+
+    def append(self, chat_id: TelegramChatId, *messages: InferenceMessage) -> None:
+        """Дописать сообщения в конец сессии одной записью (атомарно на уровне вызова)."""
+        if not messages:
+            return
+        self._directory.mkdir(parents=True, exist_ok=True)
+        payload = "".join(
+            json.dumps(
+                {"role": message.role.value, "content": message.content},
+                ensure_ascii=False,
+            )
+            + "\n"
+            for message in messages
+        )
+        with self._file_for(chat_id).open("a", encoding="utf-8") as session_file:
+            session_file.write(payload)
+
+    def reset(self, chat_id: TelegramChatId) -> None:
+        """Обнулить сессию: история отбрасывается (команда /new)."""
+        session_file = self._file_for(chat_id)
+        session_file.write_text("", encoding="utf-8")
+
+    def _file_for(self, chat_id: TelegramChatId) -> Path:
+        return self._directory / f"{chat_id}.jsonl"
+
+    @staticmethod
+    def _parse_line(line: str) -> InferenceMessage | None:
+        try:
+            record = json.loads(line)
+            role = MessageRole(record["role"])
+            content = record["content"]
+            if not isinstance(content, str):
+                return None
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return None
+        return InferenceMessage(role=role, content=content)

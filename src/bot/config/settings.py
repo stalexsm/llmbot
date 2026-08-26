@@ -6,7 +6,7 @@ inside the application operates on plain typed dataclasses.
 
 from typing import Literal
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,6 +28,9 @@ class Settings(BaseSettings):
 
     ollama_timeout_seconds: float = 120.0
     telegram_timeout_seconds: float = 30.0
+
+    # Окно истории чат-сессии: сколько последних сообщений уходит в запрос.
+    agent_history_max_messages: int = Field(default=20, ge=1)
 
     log_level: str = "INFO"
     log_format: Literal["console", "json"] = "console"

@@ -10,6 +10,9 @@ class MessageRole(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
     SYSTEM = "system"
+    # Результат инструмента; вводится агентным циклом. Окно истории уже
+    # учитывает эту роль, чтобы пара «вызов → результат» не разрывалась.
+    TOOL = "tool"
 
 
 @dataclass(frozen=True)

@@ -7,6 +7,9 @@ __pycache__/
 *.egg-info/
 .venv/
 
+# Chat session data (/.data/chats/<chat_id>.jsonl)
+.data/
+
 # Tooling caches
 .pytest_cache/
 .ruff_cache/

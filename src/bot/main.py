@@ -9,6 +9,7 @@ import asyncio
 import contextlib
 import logging
 import sys
+from pathlib import Path
 
 import httpx
 import structlog
@@ -19,6 +20,7 @@ from bot.application.service import ApplicationService
 from bot.config.settings import Settings
 from bot.domain.ids import ModelId
 from bot.inference.ollama import OllamaInferenceProvider
+from bot.sessions.store import ChatSessionStore
 from bot.telegram.handlers import TelegramHandlers
 
 
@@ -60,6 +62,8 @@ async def run() -> None:
         service = ApplicationService(
             inference=inference,
             model=ModelId(settings.ollama_model),
+            sessions=ChatSessionStore(directory=Path(".data/chats"), logger=logger),
+            history_limit=settings.agent_history_max_messages,
             logger=logger,
         )
 
