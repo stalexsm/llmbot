@@ -6,8 +6,9 @@ import pytest
 import structlog.stdlib
 
 from bot.application.errors import SessionStorageError
-from bot.domain.ids import TelegramChatId
+from bot.domain.ids import TelegramChatId, ToolId
 from bot.domain.messages import InferenceMessage, MessageRole
+from bot.domain.tools import ToolCall
 from bot.sessions.store import ChatSessionStore
 
 CHAT = TelegramChatId(100)
@@ -115,6 +116,65 @@ def test_append_does_not_write_system_messages(
     raw = (tmp_path / "100.jsonl").read_text(encoding="utf-8")
     assert "system prompt" not in raw
     assert '"user"' in raw
+
+
+def test_tool_call_and_result_roundtrip_as_linked_pair(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    # Пара «вызов инструмента → результат»: assistant с tool_calls + tool-сообщение.
+    store = make_store(tmp_path, logger)
+    call = ToolCall(name=ToolId("exec"), arguments='{"command": "ls -la"}')
+
+    store.append(
+        CHAT,
+        InferenceMessage(role=MessageRole.USER, content="покажи файлы"),
+        InferenceMessage(
+            role=MessageRole.ASSISTANT,
+            content="",
+            tool_calls=(call,),
+        ),
+        InferenceMessage(
+            role=MessageRole.TOOL,
+            content="exit_code: 0\nstdout:\nfile.txt",
+            tool_name=ToolId("exec"),
+        ),
+        InferenceMessage(role=MessageRole.ASSISTANT, content="Вот файлы: file.txt"),
+    )
+
+    assert store.load(CHAT) == (
+        InferenceMessage(role=MessageRole.USER, content="покажи файлы"),
+        InferenceMessage(role=MessageRole.ASSISTANT, content="", tool_calls=(call,)),
+        InferenceMessage(
+            role=MessageRole.TOOL,
+            content="exit_code: 0\nstdout:\nfile.txt",
+            tool_name=ToolId("exec"),
+        ),
+        InferenceMessage(role=MessageRole.ASSISTANT, content="Вот файлы: file.txt"),
+    )
+
+
+def test_load_skips_lines_with_malformed_tool_calls(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    store = make_store(tmp_path, logger)
+    session_file = tmp_path / "100.jsonl"
+    session_file.write_text(
+        # arguments не строка — строка битая, пропускается целиком.
+        '{"role": "assistant", "content": "", "tool_calls": '
+        '[{"name": "exec", "arguments": {"command": "ls"}}]}\n'
+        # tool_calls не список — тоже битая строка.
+        '{"role": "assistant", "content": "", "tool_calls": "oops"}\n'
+        # tool_name неизвестного инструмента сохраняется как есть: валидация имён — дело хранилища.
+        '{"role": "tool", "content": "ok", "tool_name": "weather"}\n'
+        # Битая строка не ломает следующие валидные.
+        '{"role": "user", "content": "ок"}\n',
+        encoding="utf-8",
+    )
+
+    assert store.load(CHAT) == (
+        InferenceMessage(role=MessageRole.TOOL, content="ok", tool_name=ToolId("weather")),
+        InferenceMessage(role=MessageRole.USER, content="ок"),
+    )
 
 
 def test_storage_failures_map_to_application_error(

@@ -6,27 +6,49 @@ from unittest.mock import AsyncMock
 import pytest
 import structlog.stdlib
 from aiogram import Bot
-from aiogram.methods import SendMessage
+from aiogram.methods import EditMessageText, SendMessage
 from pytest import MonkeyPatch
 
 import bot.telegram.handlers as handlers_module
+from bot.agent.exec import ExecTool
+from bot.agent.loop import AgentLoop
 from bot.application.errors import InferenceTimeoutError, InferenceUnavailableError
 from bot.application.service import ApplicationService
 from bot.domain.ids import ModelId, TelegramChatId
 from bot.inference.provider import InferenceProvider
 from bot.sessions.store import ChatSessionStore
 from bot.telegram.handlers import TelegramHandlers
-from tests.fakes import FailingInferenceProvider, MockInferenceProvider, make_telegram_message
+from tests.fakes import (
+    FailingInferenceProvider,
+    MockInferenceProvider,
+    ScriptedInferenceProvider,
+    exec_call_response,
+    final_response,
+    make_telegram_message,
+)
 
 
 def make_service(
     logger: structlog.stdlib.BoundLogger,
     provider: InferenceProvider,
     tmp_path: Path,
+    *,
+    step_limit: int = 10,
+    with_exec_tool: bool = False,
 ) -> ApplicationService:
-    return ApplicationService(
+    tools: tuple[ExecTool, ...] = ()
+    if with_exec_tool:
+        tools = (ExecTool(cwd=tmp_path, timeout_seconds=5.0, max_output_chars=4000, logger=logger),)
+    loop = AgentLoop(
         inference=provider,
         model=ModelId("qwen3:1.7b"),
+        system_prompt="Ты тестовый агент.",
+        tools=tools,
+        step_limit=step_limit,
+        logger=logger,
+    )
+    return ApplicationService(
+        agent=loop,
         sessions=ChatSessionStore(directory=tmp_path, logger=logger),
         history_limit=20,
         logger=logger,
@@ -85,9 +107,9 @@ async def test_new_command_resets_session_and_confirms(
     assert sent_message(request_mock).text == handlers_module._NEW_CHAT_TEXT
     sessions = ChatSessionStore(directory=tmp_path, logger=logger)
     assert sessions.load(TelegramChatId(100)) == ()
-    # Следующее сообщение не видит сброшенной истории.
+    # Следующее сообщение не видит сброшенной истории (только системный промпт + вопрос).
     await handlers.handle_text(make_telegram_message("Как меня зовут?").as_(bot))
-    assert len(provider.requests[1].messages) == 1
+    assert len(provider.requests[1].messages) == 2
 
 
 async def test_text_message_returns_model_response(
@@ -175,3 +197,78 @@ async def test_new_command_failure_converted_to_safe_message(
     await handlers.handle_new(make_telegram_message("/new").as_(bot))  # must not raise
 
     assert sent_message(request_mock).text == handlers_module._ERROR_TEXT
+
+
+async def test_command_steps_are_visible_and_edited_in_chat(
+    bot: Bot,
+    logger: structlog.stdlib.BoundLogger,
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # Модель просит exec, видит результат, отвечает финальным ответом.
+    provider = ScriptedInferenceProvider(
+        [exec_call_response("echo привет"), final_response("Итог: привет")]
+    )
+    handlers = make_handlers(logger, make_service(logger, provider, tmp_path, with_exec_tool=True))
+    # answer() возвращает отправленное сообщение — мок отдаёт связанное с ботом сообщение-статус.
+    status_message = make_telegram_message("статус", message_id=555).as_(bot)
+    request_mock = AsyncMock(return_value=status_message)
+    monkeypatch.setattr(bot.session, "make_request", request_mock)
+
+    await handlers.handle_text(make_telegram_message("покажи привет").as_(bot))
+
+    calls = [call.args[1] for call in request_mock.await_args_list]
+    assert [type(call) for call in calls] == [SendMessage, EditMessageText, SendMessage]
+    assert calls[0].text == "⏳ echo привет"
+    assert calls[1].text == "✅ echo привет"
+    assert calls[2].text == "Итог: привет"
+
+
+async def test_failed_command_step_is_marked_with_failure(
+    bot: Bot,
+    logger: structlog.stdlib.BoundLogger,
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    provider = ScriptedInferenceProvider(
+        [exec_call_response("exit 7"), final_response("Разобрался")]
+    )
+    handlers = make_handlers(logger, make_service(logger, provider, tmp_path, with_exec_tool=True))
+    status_message = make_telegram_message("статус", message_id=556).as_(bot)
+    request_mock = AsyncMock(return_value=status_message)
+    monkeypatch.setattr(bot.session, "make_request", request_mock)
+
+    await handlers.handle_text(make_telegram_message("сделай").as_(bot))
+
+    calls = [call.args[1] for call in request_mock.await_args_list]
+    assert calls[0].text == "⏳ exit 7"
+    assert calls[1].text == "❌ exit 7"
+    assert calls[2].text == "Разобрался"
+
+
+async def test_step_limit_receives_honest_stop_message(
+    bot: Bot,
+    logger: structlog.stdlib.BoundLogger,
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    provider = ScriptedInferenceProvider([exec_call_response("true"), exec_call_response("true")])
+    handlers = make_handlers(
+        logger, make_service(logger, provider, tmp_path, step_limit=2, with_exec_tool=True)
+    )
+    status_message = make_telegram_message("статус", message_id=557).as_(bot)
+    request_mock = AsyncMock(return_value=status_message)
+    monkeypatch.setattr(bot.session, "make_request", request_mock)
+
+    await handlers.handle_text(make_telegram_message("зациклись").as_(bot))
+
+    calls = [call.args[1] for call in request_mock.await_args_list]
+    # Два шага: пара сообщений на каждый (статус + правка), затем сообщение об остановке.
+    assert [type(call) for call in calls] == [
+        SendMessage,
+        EditMessageText,
+        SendMessage,
+        EditMessageText,
+        SendMessage,
+    ]
+    assert calls[4].text == handlers_module._STEP_LIMIT_TEXT

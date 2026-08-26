@@ -9,16 +9,23 @@ from bot.application.errors import ApplicationError
 from bot.application.service import ApplicationService
 from bot.domain.ids import TelegramChatId
 from bot.telegram.mapper import to_user_request
+from bot.telegram.progress import TelegramCommandProgress
 
 _START_TEXT = (
     "Привет! Я подключён к локальной языковой модели через Ollama.\n"
-    "Отправьте текст — я отвечу с учётом контекста нашего диалога.\n"
+    "Отправьте текст — я отвечу с учётом контекста нашего диалога,\n"
+    "а при необходимости сам выполню консольные команды.\n"
     "Команда /new начнёт новый чат без истории."
 )
 
 _NEW_CHAT_TEXT = "🆕 Новый чат: история диалога сброшена."
 
 _ERROR_TEXT = "Не удалось получить ответ модели. Попробуйте повторить запрос позже."
+
+_STEP_LIMIT_TEXT = (
+    "⏹ Достигнут лимит шагов агента: задача остановлена.\n"
+    "Уточните запрос или начните новый чат командой /new."
+)
 
 
 class TelegramHandlers:
@@ -58,8 +65,9 @@ class TelegramHandlers:
     async def handle_text(self, message: Message) -> None:
         request = to_user_request(message)
         self._logger.info("message_received", request_id=request.request_id)
+        progress = TelegramCommandProgress(source=message, logger=self._logger)
         try:
-            response = await self._service.process_message(request)
+            response = await self._service.process_message(request, progress)
         except ApplicationError as exc:
             self._logger.error(
                 "reply_failed",
@@ -69,5 +77,6 @@ class TelegramHandlers:
             )
             await message.answer(_ERROR_TEXT)
             return
-        await message.answer(response.text)
+        text = _STEP_LIMIT_TEXT if response.stopped_by_step_limit else response.text
+        await message.answer(text)
         self._logger.info("reply_sent", request_id=response.request_id, status="success")

@@ -27,3 +27,6 @@ class UserMessageResponse:
 
     request_id: RequestId
     text: str
+    # Цикл остановлен по лимиту шагов: текста модели нет, пользователь получает
+    # честное сообщение об остановке (текст принадлежит Telegram-слою).
+    stopped_by_step_limit: bool = False

@@ -3,6 +3,9 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
+from bot.domain.ids import ToolId
+from bot.domain.tools import ToolCall
+
 
 class MessageRole(StrEnum):
     """Roles supported by the chat message representation."""
@@ -21,3 +24,7 @@ class InferenceMessage:
 
     role: MessageRole
     content: str
+    # Вызовы инструментов, запрошенные моделью в этом assistant-сообщении.
+    tool_calls: tuple[ToolCall, ...] = ()
+    # Имя инструмента для role=TOOL: связывает результат с вызовом.
+    tool_name: ToolId | None = None

@@ -2,13 +2,17 @@
 
 Responsibilities:
     - HTTP communication with a local Ollama instance;
-    - request serialization;
+    - request serialization (включая нативный протокол инструментов);
     - response parsing and validation;
     - timeout handling;
     - mapping infrastructure errors to application-level errors.
 
 The adapter knows nothing about Telegram.
 """
+
+import contextlib
+import json
+import re
 
 import httpx
 import structlog
@@ -19,14 +23,35 @@ from bot.application.errors import (
     InferenceTimeoutError,
     InferenceUnavailableError,
 )
+from bot.domain.ids import ToolId
+from bot.domain.messages import InferenceMessage
+from bot.domain.tools import ToolCall, ToolSpec
 from bot.inference.models import InferenceRequest, InferenceResponse
+
+# Служебные размышления модели не должны попадать в контент ответа.
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
+
+
+class _ToolCallFunctionPayload(BaseModel):
+    """Wire format of a tool call inside a chat message (external boundary only)."""
+
+    name: str
+    # Новые сборки Ollama возвращают объект, старые — JSON-строку.
+    arguments: dict[str, object] | str = {}
+
+
+class _ToolCallPayload(BaseModel):
+    """Wire format of an OpenAI-style tool call (external boundary only)."""
+
+    function: _ToolCallFunctionPayload
 
 
 class _ChatMessagePayload(BaseModel):
     """Wire format of an Ollama chat message (external boundary only)."""
 
     role: str
-    content: str
+    content: str = ""
+    tool_calls: list[_ToolCallPayload] | None = None
 
 
 class _ChatResponsePayload(BaseModel):
@@ -93,15 +118,80 @@ class OllamaInferenceProvider:
 
         return InferenceResponse(
             request_id=request.request_id,
-            content=payload.message.content,
+            content=self._strip_thinking(payload.message.content),
+            tool_calls=tuple(
+                _tool_call_to_domain(call.function) for call in payload.message.tool_calls or ()
+            ),
         )
 
     def _serialize_request(self, request: InferenceRequest) -> dict[str, object]:
-        return {
+        body: dict[str, object] = {
             "model": request.model,
-            "messages": [
-                {"role": message.role.value, "content": message.content}
-                for message in request.messages
-            ],
+            "messages": [self._serialize_message(message) for message in request.messages],
             "stream": False,
+            # Режим размышлений модели отключён: в ответе нужен только контент.
+            "think": False,
         }
+        if request.tools:
+            body["tools"] = [self._serialize_tool(spec) for spec in request.tools]
+        return body
+
+    @staticmethod
+    def _serialize_message(message: InferenceMessage) -> dict[str, object]:
+        payload: dict[str, object] = {"role": message.role.value, "content": message.content}
+        if message.tool_name is not None:
+            payload["tool_name"] = message.tool_name
+        if message.tool_calls:
+            payload["tool_calls"] = [
+                {"function": {"name": call.name, "arguments": _arguments_to_wire(call.arguments)}}
+                for call in message.tool_calls
+            ]
+        return payload
+
+    @staticmethod
+    def _serialize_tool(spec: ToolSpec) -> dict[str, object]:
+        return {
+            "type": "function",
+            "function": {
+                "name": spec.name,
+                "description": spec.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        parameter.name: {
+                            "type": parameter.type,
+                            "description": parameter.description,
+                        }
+                        for parameter in spec.parameters
+                    },
+                    "required": list(spec.required),
+                },
+            },
+        }
+
+    @staticmethod
+    def _strip_thinking(content: str) -> str:
+        """Убрать служебные размышления модели из контента ответа."""
+        stripped = _THINK_BLOCK_RE.sub("", content)
+        unclosed = stripped.find("<think>")
+        if unclosed != -1:
+            stripped = stripped[:unclosed]
+        return stripped.strip()
+
+
+def _tool_call_to_domain(function: _ToolCallFunctionPayload) -> ToolCall:
+    """Привести вызов инструмента из wire-формата к доменной модели."""
+    if isinstance(function.arguments, str):
+        encoded = function.arguments
+    else:
+        encoded = json.dumps(function.arguments, ensure_ascii=False)
+    return ToolCall(name=ToolId(function.name), arguments=encoded)
+
+
+def _arguments_to_wire(arguments: str) -> dict[str, object]:
+    """Домен хранит аргументы JSON-строкой; Ollama ждёт объект."""
+    with contextlib.suppress(json.JSONDecodeError):
+        parsed = json.loads(arguments)
+        if isinstance(parsed, dict):
+            return parsed
+    return {}

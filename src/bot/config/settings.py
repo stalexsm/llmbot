@@ -29,6 +29,11 @@ class Settings(BaseSettings):
     ollama_timeout_seconds: float = 120.0
     telegram_timeout_seconds: float = 30.0
 
+    # Агентный цикл: лимит шагов и ограничения инструмента exec.
+    agent_max_steps: int = Field(default=10, ge=1)
+    agent_exec_timeout_seconds: float = Field(default=60.0, gt=0)
+    agent_exec_max_output_chars: int = Field(default=4000, ge=200)
+
     # Окно истории чат-сессии: сколько последних сообщений уходит в запрос.
     agent_history_max_messages: int = Field(default=20, ge=1)
 

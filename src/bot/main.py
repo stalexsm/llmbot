@@ -16,6 +16,9 @@ import structlog
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 
+from bot.agent.exec import ExecTool
+from bot.agent.loop import AgentLoop
+from bot.agent.prompts import SYSTEM_PROMPT
 from bot.application.service import ApplicationService
 from bot.config.settings import Settings
 from bot.domain.ids import ModelId
@@ -59,9 +62,22 @@ async def run() -> None:
             timeout_seconds=settings.ollama_timeout_seconds,
             logger=logger,
         )
-        service = ApplicationService(
+        exec_tool = ExecTool(
+            cwd=Path.cwd(),
+            timeout_seconds=settings.agent_exec_timeout_seconds,
+            max_output_chars=settings.agent_exec_max_output_chars,
+            logger=logger,
+        )
+        agent_loop = AgentLoop(
             inference=inference,
             model=ModelId(settings.ollama_model),
+            system_prompt=SYSTEM_PROMPT,
+            tools=(exec_tool,),
+            step_limit=settings.agent_max_steps,
+            logger=logger,
+        )
+        service = ApplicationService(
+            agent=agent_loop,
             sessions=ChatSessionStore(directory=Path(".data/chats"), logger=logger),
             history_limit=settings.agent_history_max_messages,
             logger=logger,

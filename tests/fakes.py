@@ -1,7 +1,12 @@
 """Test doubles and factories shared across unit and integration tests."""
 
+import json
+from uuid import uuid4
+
 from aiogram.types import Message
 
+from bot.domain.ids import RequestId, ToolId
+from bot.domain.tools import ToolCall
 from bot.inference.models import InferenceRequest, InferenceResponse
 
 
@@ -18,6 +23,49 @@ class MockInferenceProvider:
     async def generate(self, request: InferenceRequest) -> InferenceResponse:
         self.requests.append(request)
         return InferenceResponse(request_id=request.request_id, content=self.response_content)
+
+
+class ScriptedInferenceProvider:
+    """Провайдер с заранее заготовленными ответами по порядку (для агентного цикла)."""
+
+    def __init__(self, responses: list[InferenceResponse]) -> None:
+        self._responses = list(responses)
+        self.requests: list[InferenceRequest] = []
+
+    async def generate(self, request: InferenceRequest) -> InferenceResponse:
+        self.requests.append(request)
+        if not self._responses:
+            raise AssertionError("scripted inference responses are exhausted")
+        return self._responses.pop(0)
+
+
+def exec_call_response(*commands: str) -> InferenceResponse:
+    """Ответ модели, запрашивающий инструмент exec с указанными командами."""
+    return InferenceResponse(
+        request_id=RequestId("scripted"),
+        content="",
+        tool_calls=tuple(
+            ToolCall(
+                name=ToolId("exec"),
+                arguments=json.dumps({"command": command}, ensure_ascii=False),
+            )
+            for command in commands
+        ),
+    )
+
+
+def tool_call_response(name: str, arguments: str) -> InferenceResponse:
+    """Ответ модели с произвольным вызовом инструмента."""
+    return InferenceResponse(
+        request_id=RequestId("scripted"),
+        content="",
+        tool_calls=(ToolCall(name=ToolId(name), arguments=arguments),),
+    )
+
+
+def final_response(text: str) -> InferenceResponse:
+    """Финальный ответ модели без вызовов инструментов."""
+    return InferenceResponse(request_id=RequestId(str(uuid4())), content=text)
 
 
 class FailingInferenceProvider:

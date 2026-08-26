@@ -11,8 +11,9 @@ from pathlib import Path
 import structlog
 
 from bot.application.errors import SessionStorageError
-from bot.domain.ids import TelegramChatId
+from bot.domain.ids import TelegramChatId, ToolId
 from bot.domain.messages import InferenceMessage, MessageRole
+from bot.domain.tools import ToolCall
 
 
 class ChatSessionStore:
@@ -56,11 +57,7 @@ class ChatSessionStore:
         if not persisted:
             return
         payload = "".join(
-            json.dumps(
-                {"role": message.role.value, "content": message.content},
-                ensure_ascii=False,
-            )
-            + "\n"
+            json.dumps(self._record_for(message), ensure_ascii=False) + "\n"
             for message in persisted
         )
         try:
@@ -83,6 +80,17 @@ class ChatSessionStore:
         return self._directory / f"{chat_id}.jsonl"
 
     @staticmethod
+    def _record_for(message: InferenceMessage) -> dict[str, object]:
+        record: dict[str, object] = {"role": message.role.value, "content": message.content}
+        if message.tool_calls:
+            record["tool_calls"] = [
+                {"name": call.name, "arguments": call.arguments} for call in message.tool_calls
+            ]
+        if message.tool_name is not None:
+            record["tool_name"] = message.tool_name
+        return record
+
+    @staticmethod
     def _parse_line(line: str) -> InferenceMessage | None:
         try:
             record = json.loads(line)
@@ -90,6 +98,35 @@ class ChatSessionStore:
             content = record["content"]
             if not isinstance(content, str):
                 return None
+            tool_calls = ChatSessionStore._parse_tool_calls(record.get("tool_calls"))
+            if tool_calls is None:
+                return None
+            raw_tool_name = record.get("tool_name")
+            if raw_tool_name is not None and not isinstance(raw_tool_name, str):
+                return None
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             return None
-        return InferenceMessage(role=role, content=content)
+        return InferenceMessage(
+            role=role,
+            content=content,
+            tool_calls=tool_calls,
+            tool_name=ToolId(raw_tool_name) if raw_tool_name is not None else None,
+        )
+
+    @staticmethod
+    def _parse_tool_calls(raw: object) -> tuple[ToolCall, ...] | None:
+        """Разобрать вызовы инструментов строки; ``None`` — строка битая."""
+        if raw is None:
+            return ()
+        if not isinstance(raw, list):
+            return None
+        calls: list[ToolCall] = []
+        for item in raw:
+            if not isinstance(item, dict):
+                return None
+            name = item.get("name")
+            arguments = item.get("arguments")
+            if not isinstance(name, str) or not isinstance(arguments, str):
+                return None
+            calls.append(ToolCall(name=ToolId(name), arguments=arguments))
+        return tuple(calls)
