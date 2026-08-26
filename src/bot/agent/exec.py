@@ -16,7 +16,7 @@ from pathlib import Path
 import structlog
 
 from bot.agent.progress import AgentProgress
-from bot.domain.ids import ToolId
+from bot.domain.ids import RequestId, ToolId
 from bot.domain.tools import ToolCall, ToolParameter, ToolResult, ToolSpec
 
 _TRUNCATION_MARKER = "\n…[вывод обрезан]"
@@ -64,7 +64,9 @@ class ExecTool:
     def spec(self) -> ToolSpec:
         return self._spec
 
-    async def execute(self, call: ToolCall, progress: AgentProgress) -> ToolResult:
+    async def execute(
+        self, request_id: RequestId, call: ToolCall, progress: AgentProgress
+    ) -> ToolResult:
         command = self._extract_command(call)
         if command is None:
             return ToolResult(
@@ -82,6 +84,7 @@ class ExecTool:
         await self._report_finished(progress, command, result.succeeded)
         self._logger.info(
             "command_executed",
+            request_id=request_id,
             duration_ms=int((time.monotonic() - started_at) * 1000),
             succeeded=result.succeeded,
         )

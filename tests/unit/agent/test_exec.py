@@ -6,10 +6,11 @@ from pathlib import Path
 
 import pytest
 import structlog.stdlib
+from structlog.testing import CapturingLogger
 
 from bot.agent.exec import ExecTool
 from bot.agent.progress import NullProgress
-from bot.domain.ids import ToolId
+from bot.domain.ids import RequestId, ToolId
 from bot.domain.tools import ToolCall
 
 
@@ -34,6 +35,9 @@ class FailingProgress:
 
     async def command_finished(self, command: str, succeeded: bool) -> None:
         raise RuntimeError("telegram is down")
+
+
+REQUEST_ID = RequestId("exec-test-request")
 
 
 def make_tool(
@@ -65,7 +69,7 @@ async def test_successful_command_returns_stdout_and_exit_code(
 ) -> None:
     tool = make_tool(tmp_path, logger)
 
-    result = await tool.execute(exec_call("echo привет"), NullProgress())
+    result = await tool.execute(REQUEST_ID, exec_call("echo привет"), NullProgress())
 
     assert result.succeeded is True
     assert "exit_code: 0" in result.content
@@ -78,7 +82,7 @@ async def test_failing_command_is_visible_to_the_model(
 ) -> None:
     tool = make_tool(tmp_path, logger)
 
-    result = await tool.execute(exec_call("echo беда >&2; exit 3"), NullProgress())
+    result = await tool.execute(REQUEST_ID, exec_call("echo беда >&2; exit 3"), NullProgress())
 
     assert result.succeeded is False
     assert "exit_code: 3" in result.content
@@ -91,7 +95,7 @@ async def test_working_directory_is_tool_argument(
 ) -> None:
     tool = make_tool(tmp_path, logger)
 
-    result = await tool.execute(exec_call("pwd"), NullProgress())
+    result = await tool.execute(REQUEST_ID, exec_call("pwd"), NullProgress())
 
     # На macOS tmp_path указывает через симлинк /private — сравниваем realpath.
     printed = result.content.splitlines()[2].strip()
@@ -103,7 +107,7 @@ async def test_hung_command_is_aborted_by_timeout(
 ) -> None:
     tool = make_tool(tmp_path, logger, timeout=0.2)
 
-    result = await tool.execute(exec_call("sleep 30"), NullProgress())
+    result = await tool.execute(REQUEST_ID, exec_call("sleep 30"), NullProgress())
 
     assert result.succeeded is False
     assert "timeout" in result.content
@@ -114,7 +118,9 @@ async def test_long_output_is_trimmed_to_char_limit(
 ) -> None:
     tool = make_tool(tmp_path, logger, max_output_chars=500)
 
-    result = await tool.execute(exec_call("python3 -c \"print('a' * 5000)\""), NullProgress())
+    result = await tool.execute(
+        REQUEST_ID, exec_call("python3 -c \"print('a' * 5000)\""), NullProgress()
+    )
 
     assert len(result.content) <= 515  # лимит плюс маркер обрезки
     assert "вывод обрезан" in result.content
@@ -126,7 +132,9 @@ async def test_invalid_json_arguments_return_error_result(
 ) -> None:
     tool = make_tool(tmp_path, logger)
 
-    result = await tool.execute(ToolCall(name=ToolId("exec"), arguments="не json"), NullProgress())
+    result = await tool.execute(
+        REQUEST_ID, ToolCall(name=ToolId("exec"), arguments="не json"), NullProgress()
+    )
 
     assert result.succeeded is False
     assert "command" in result.content  # подсказка модели, что ожидается
@@ -137,10 +145,25 @@ async def test_missing_command_argument_returns_error_result(
 ) -> None:
     tool = make_tool(tmp_path, logger)
 
-    result = await tool.execute(ToolCall(name=ToolId("exec"), arguments="{}"), NullProgress())
+    result = await tool.execute(
+        REQUEST_ID, ToolCall(name=ToolId("exec"), arguments="{}"), NullProgress()
+    )
 
     assert result.succeeded is False
     assert "command" in result.content
+
+
+async def test_command_event_is_logged_with_request_id(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger, capturing_logger: CapturingLogger
+) -> None:
+    # §19: request_id в событиях — корреляция exec-шага с запросом.
+    tool = make_tool(tmp_path, logger)
+
+    await tool.execute(REQUEST_ID, exec_call("echo ок"), NullProgress())
+
+    events = [call.kwargs for call in capturing_logger.calls if call.kwargs.get("event")]
+    executed = [kwargs for kwargs in events if kwargs.get("event") == "command_executed"]
+    assert executed and executed[0].get("request_id") == REQUEST_ID
 
 
 async def test_progress_receives_started_then_finished(
@@ -149,7 +172,7 @@ async def test_progress_receives_started_then_finished(
     tool = make_tool(tmp_path, logger)
     progress = RecordingProgress()
 
-    result = await tool.execute(exec_call("echo ок"), progress)
+    result = await tool.execute(REQUEST_ID, exec_call("echo ок"), progress)
 
     assert result.succeeded is True
     assert progress.events == [
@@ -163,7 +186,7 @@ async def test_progress_failure_does_not_break_execution(
 ) -> None:
     tool = make_tool(tmp_path, logger)
 
-    result = await tool.execute(exec_call("echo ок"), FailingProgress())
+    result = await tool.execute(REQUEST_ID, exec_call("echo ок"), FailingProgress())
 
     assert result.succeeded is True
     assert "ок" in result.content
@@ -186,6 +209,6 @@ async def test_result_content_starts_with_exit_code(
 ) -> None:
     tool = make_tool(tmp_path, logger)
 
-    result = await tool.execute(exec_call(command), NullProgress())
+    result = await tool.execute(REQUEST_ID, exec_call(command), NullProgress())
 
     assert result.content.startswith("exit_code:")

@@ -149,7 +149,7 @@ class AgentLoop:
                 f"{', '.join(str(name) for name in self._tools)}.",
                 succeeded=False,
             )
-        return await tool.execute(call, progress)
+        return await tool.execute(request_id, call, progress)
 
     def _log_run(
         self,
