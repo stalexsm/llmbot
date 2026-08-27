@@ -1,10 +1,11 @@
 """The ``ProcessUserMessage`` use case: агентная обработка сообщения в чат-сессии."""
 
 import asyncio
+import json
 
 import structlog
 
-from bot.agent.loop import AgentLoop
+from bot.agent.loop import AgentLoop, AgentRun
 from bot.agent.progress import AgentProgress
 from bot.application.models import UserMessageRequest, UserMessageResponse
 from bot.domain.ids import TelegramChatId
@@ -21,6 +22,21 @@ class ApplicationService:
     Обработка сообщений одного чата строго последовательна (блокировка на
     чат), разные чаты — параллельны.
     """
+
+    # Запуск, где модель «сдалась» после провалившихся команд, не пишется
+    # в сессию и повторяется один раз: неудачный обмен в истории учит
+    # крошечные модели повторять отказ вместо работы (компиляция брака).
+    _GIVEUP_MARKERS = (
+        "я не знаю",
+        "не удалось",
+        "не доступна",
+        "недоступна",
+        "недоступен",
+        "недоступны",
+        "не смог",
+        "не могу получит",
+    )
+    _GIVEUP_RETRIES = 1
 
     def __init__(
         self,
@@ -60,9 +76,23 @@ class ApplicationService:
         )
         user_message = InferenceMessage(role=MessageRole.USER, content=request.text)
         run = await self._agent.run(request.request_id, history, user_message, progress)
+        # Отказ-подобный ответ — не пишем его в сессию (иначе он учит модель
+        # сдаваться) и пробуем ещё раз: и когда команды провалились, и когда
+        # модель даже не попыталась ими воспользоваться.
+        for attempt in range(1, self._GIVEUP_RETRIES + 2):
+            last_chance = attempt > self._GIVEUP_RETRIES
+            if last_chance or not self._is_broken_run(run):
+                break
+            self._logger.warning(
+                "agent_run_giveup_retry",
+                request_id=request.request_id,
+                attempt=attempt,
+            )
+            run = await self._agent.run(request.request_id, history, user_message, progress)
         # Обмен сохраняется целиком: пользователь, пары «вызов → результат»,
         # финальный ответ. Незавершённые попытки (исключение) сессию не меняют.
-        self._sessions.append(request.chat_id, *run.exchange)
+        if not self._is_broken_run(run):
+            self._sessions.append(request.chat_id, *run.exchange)
         if run.stopped_by_limit:
             self._logger.warning(
                 "agent_stopped_by_step_limit",
@@ -84,6 +114,49 @@ class ApplicationService:
             request_id=request.request_id,
             text=run.final_answer,
         )
+
+    @classmethod
+    def _is_broken_run(cls, run: AgentRun) -> bool:
+        """Похоже ли, что запуск «сдался», а не отработал задачу.
+
+        Брак — отказ-подобный финал, за которым либо провалившиеся команды,
+        либо полное отсутствие попыток, либо только чтение скиллов (прочитал
+        инструкцию и бросил, не дойдя до данных). Честное «не знаю» после
+        реальной работы с данными браком не считается.
+        """
+        if run.final_answer is None or not cls._is_giveup(run.final_answer):
+            return False
+        tools_used = sum(1 for message in run.exchange if message.role is MessageRole.TOOL)
+        if run.failed_tool_results > 0 or tools_used == 0:
+            return True
+        return cls._only_skill_reads(run.exchange)
+
+    @staticmethod
+    def _only_skill_reads(exchange: tuple[InferenceMessage, ...]) -> bool:
+        """Все ли вызовы инструментов в обмене — чтение файлов скиллов."""
+        calls = [
+            call
+            for message in exchange
+            if message.role is MessageRole.ASSISTANT
+            for call in message.tool_calls
+        ]
+        if not calls:
+            return False
+        for call in calls:
+            try:
+                arguments = json.loads(call.arguments)
+            except json.JSONDecodeError:
+                return False
+            command = arguments.get("command") if isinstance(arguments, dict) else None
+            if not isinstance(command, str) or not command.startswith("cat skills/"):
+                return False
+        return True
+
+    @classmethod
+    def _is_giveup(cls, text: str) -> bool:
+        """Похоже ли сообщение на отказ-после-неудач (в нижнем регистре)."""
+        lowered = text.lower()
+        return any(marker in lowered for marker in cls._GIVEUP_MARKERS)
 
     def _lock_for(self, chat_id: TelegramChatId) -> asyncio.Lock:
         lock = self._chat_locks.get(chat_id)

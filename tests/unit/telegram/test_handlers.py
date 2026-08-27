@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 import structlog.stdlib
 from aiogram import Bot
-from aiogram.methods import EditMessageText, SendMessage
+from aiogram.methods import SendMessage
 from pytest import MonkeyPatch
 
 import bot.telegram.handlers as handlers_module
@@ -215,51 +215,25 @@ async def test_new_command_failure_converted_to_safe_message(
     assert sent_message(request_mock).text == handlers_module._ERROR_TEXT
 
 
-async def test_command_steps_are_visible_and_edited_in_chat(
+async def test_command_execution_sends_only_final_answer(
     bot: Bot,
     logger: structlog.stdlib.BoundLogger,
     monkeypatch: MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    """Выполняемые команды — внутренняя кухня: в чате только финальный ответ."""
     # Модель просит exec, видит результат, отвечает финальным ответом.
     provider = ScriptedInferenceProvider(
         [exec_call_response("echo привет"), final_response("Итог: привет")]
     )
     handlers = make_handlers(logger, make_service(logger, provider, tmp_path, with_exec_tool=True))
-    # answer() возвращает отправленное сообщение — мок отдаёт связанное с ботом сообщение-статус.
-    status_message = make_telegram_message("статус", message_id=555).as_(bot)
-    request_mock = AsyncMock(return_value=status_message)
-    monkeypatch.setattr(bot.session, "make_request", request_mock)
+    request_mock = mock_telegram_api(bot, monkeypatch)
 
     await handlers.handle_text(make_telegram_message("покажи привет").as_(bot))
 
     calls = [call.args[1] for call in request_mock.await_args_list]
-    assert [type(call) for call in calls] == [SendMessage, EditMessageText, SendMessage]
-    assert calls[0].text == "⏳ echo привет"
-    assert calls[1].text == "✅ echo привет"
-    assert calls[2].text == "Итог: привет"
-
-
-async def test_failed_command_step_is_marked_with_failure(
-    bot: Bot,
-    logger: structlog.stdlib.BoundLogger,
-    monkeypatch: MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    provider = ScriptedInferenceProvider(
-        [exec_call_response("exit 7"), final_response("Разобрался")]
-    )
-    handlers = make_handlers(logger, make_service(logger, provider, tmp_path, with_exec_tool=True))
-    status_message = make_telegram_message("статус", message_id=556).as_(bot)
-    request_mock = AsyncMock(return_value=status_message)
-    monkeypatch.setattr(bot.session, "make_request", request_mock)
-
-    await handlers.handle_text(make_telegram_message("сделай").as_(bot))
-
-    calls = [call.args[1] for call in request_mock.await_args_list]
-    assert calls[0].text == "⏳ exit 7"
-    assert calls[1].text == "❌ exit 7"
-    assert calls[2].text == "Разобрался"
+    assert [type(call) for call in calls] == [SendMessage]
+    assert calls[0].text == "Итог: привет"
 
 
 async def test_step_limit_receives_honest_stop_message(
@@ -272,22 +246,14 @@ async def test_step_limit_receives_honest_stop_message(
     handlers = make_handlers(
         logger, make_service(logger, provider, tmp_path, step_limit=2, with_exec_tool=True)
     )
-    status_message = make_telegram_message("статус", message_id=557).as_(bot)
-    request_mock = AsyncMock(return_value=status_message)
-    monkeypatch.setattr(bot.session, "make_request", request_mock)
+    request_mock = mock_telegram_api(bot, monkeypatch)
 
     await handlers.handle_text(make_telegram_message("зациклись").as_(bot))
 
     calls = [call.args[1] for call in request_mock.await_args_list]
-    # Два шага: пара сообщений на каждый (статус + правка), затем сообщение об остановке.
-    assert [type(call) for call in calls] == [
-        SendMessage,
-        EditMessageText,
-        SendMessage,
-        EditMessageText,
-        SendMessage,
-    ]
-    assert calls[4].text == handlers_module._STEP_LIMIT_TEXT
+    # Прогресс шагов в чат не выводится: единственное сообщение — честная остановка.
+    assert [type(call) for call in calls] == [SendMessage]
+    assert calls[0].text == handlers_module._STEP_LIMIT_TEXT
 
 
 # --- Allowlist чатов ---------------------------------------------------------

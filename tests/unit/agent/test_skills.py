@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from bot.agent.prompts import SYSTEM_PROMPT, build_system_prompt
+from bot.agent.prompts import SYSTEM_PROMPT, build_date_block, build_system_prompt
 from bot.agent.skills import SkillEntry, load_skills, parse_skill, render_skills_index
 
 _ENTRIES = (
@@ -277,3 +277,29 @@ class TestBuildSystemPrompt:
     def test_base_prompt_is_self_sufficient_without_skills(self) -> None:
         """Без скиллов промпт не ссылается на них."""
         assert "скилл" not in SYSTEM_PROMPT.lower()
+
+
+class TestBuildDateBlock:
+    """Блок актуальной даты: рендерится на каждый запуск цикла."""
+
+    def test_fixed_moment_renders_full_date_and_weekday(self) -> None:
+        from datetime import datetime
+
+        moment = datetime(2026, 8, 27, 14, 30)  # четверг
+
+        block = build_date_block(moment)
+
+        assert block == (
+            "<date>Сегодняшняя дата: 27 августа 2026 года, четверг. "
+            "Если нужны точные дата или время — уточняй их командой "
+            "execute_command (date).</date>"
+        )
+
+    def test_block_is_asked_fresh_per_call(self) -> None:
+        from datetime import datetime
+
+        morning = build_date_block(datetime(2026, 8, 27, 9, 0))
+        evening = build_date_block(datetime(2026, 8, 28, 21, 0))
+
+        assert "27 августа" in morning
+        assert "28 августа" in evening

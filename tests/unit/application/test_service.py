@@ -10,6 +10,7 @@ from structlog.testing import CapturingLogger
 
 from bot.agent.exec import ExecTool
 from bot.agent.loop import AgentLoop
+from bot.agent.prompts import build_date_block
 from bot.application.errors import (
     EmptyInferenceResponseError,
     InferenceTimeoutError,
@@ -124,7 +125,10 @@ async def test_builds_inference_request(
     assert inference_request.request_id == request.request_id
     assert inference_request.model == ModelId(model)
     assert inference_request.messages == (
-        InferenceMessage(role=MessageRole.SYSTEM, content=SYSTEM_PROMPT),
+        InferenceMessage(
+            role=MessageRole.SYSTEM,
+            content=f"{SYSTEM_PROMPT}\n\n{build_date_block()}",
+        ),
         InferenceMessage(role=MessageRole.USER, content="Привет"),
     )
 
@@ -140,7 +144,10 @@ async def test_second_message_sees_first_exchange(
 
     assert len(provider.requests) == 2
     assert provider.requests[1].messages == (
-        InferenceMessage(role=MessageRole.SYSTEM, content=SYSTEM_PROMPT),
+        InferenceMessage(
+            role=MessageRole.SYSTEM,
+            content=f"{SYSTEM_PROMPT}\n\n{build_date_block()}",
+        ),
         InferenceMessage(role=MessageRole.USER, content="Меня зовут Саша"),
         InferenceMessage(role=MessageRole.ASSISTANT, content="Ответ модели"),
         InferenceMessage(role=MessageRole.USER, content="Как меня зовут?"),
@@ -164,7 +171,7 @@ async def test_history_window_limits_request_messages(
     messages = provider.requests[0].messages
     assert len(messages) == 7  # системный промпт + окно 5 + текущее сообщение
     assert [message.content for message in messages] == [
-        SYSTEM_PROMPT,
+        f"{SYSTEM_PROMPT}\n\n{build_date_block()}",
         "старое 3",
         "старое 4",
         "старое 5",
@@ -190,7 +197,8 @@ async def test_failed_inference_leaves_session_untouched(
 async def test_empty_model_response_raises_explicitly(
     logger: structlog.stdlib.BoundLogger, tmp_path: Path
 ) -> None:
-    provider = ScriptedInferenceProvider([final_response("   ")])
+    # Цикл дважды повторяет пустой шаг; после исчерпания повторов — исключение.
+    provider = ScriptedInferenceProvider([final_response("   ")] * 3)
     service = make_service(logger, provider, tmp_path)
 
     with pytest.raises(EmptyInferenceResponseError):
@@ -237,10 +245,120 @@ async def test_tool_pairs_persisted_to_session_as_linked_chain(
         MessageRole.ASSISTANT,
     ]
     assert history[1].tool_calls == (
-        ToolCall(name=ToolId("exec"), arguments='{"command": "echo привет"}'),
+        ToolCall(name=ToolId("execute_command"), arguments='{"command": "echo привет"}'),
     )
-    assert history[2].tool_name == ToolId("exec")
+    assert history[2].tool_name == ToolId("execute_command")
     assert "привет" in history[2].content
+
+
+async def test_giveup_run_is_not_persisted_and_retried(
+    logger: structlog.stdlib.BoundLogger, tmp_path: Path
+) -> None:
+    """Отказ-подобный финал после провала команды: без записи в сессию, с повтором."""
+    provider = ScriptedInferenceProvider(
+        [
+            exec_call_response("false"),
+            final_response("Не удалось получить данные: команда завершилась с ошибкой."),
+            exec_call_response("echo данные"),
+            final_response("Вот данные: 42"),
+        ]
+    )
+    service = make_service(logger, provider, tmp_path, with_exec_tool=True)
+
+    response = await service.process_message(make_request("дай данные"))
+
+    # Принят второй запуск; бракованный не дошёл до пользователя и в сессию.
+    assert response.text == "Вот данные: 42"
+    sessions = ChatSessionStore(directory=tmp_path, logger=logger)
+    history = sessions.load(CHAT)
+    assert [m.role for m in history] == [
+        MessageRole.USER,
+        MessageRole.ASSISTANT,
+        MessageRole.TOOL,
+        MessageRole.ASSISTANT,
+    ]
+    assert history[3].content == "Вот данные: 42"
+    # Всего четыре запроса модели: два на забракованный запуск, два на принятый.
+    assert len(provider.requests) == 4
+
+
+async def test_successful_run_is_not_retried(
+    logger: structlog.stdlib.BoundLogger, tmp_path: Path
+) -> None:
+    provider = ScriptedInferenceProvider([final_response("Обычный успешный ответ")])
+    service = make_service(logger, provider, tmp_path)
+
+    response = await service.process_message(make_request("привет"))
+
+    assert response.text == "Обычный успешный ответ"
+    assert len(provider.requests) == 1
+
+
+async def test_giveup_without_any_tool_attempt_is_retried(
+    logger: structlog.stdlib.BoundLogger, tmp_path: Path
+) -> None:
+    """Модель отказалась, даже не попробовав инструменты, — повторяем запуск."""
+    provider = ScriptedInferenceProvider(
+        [
+            final_response("Я не знаю точного ответа на этот вопрос."),
+            final_response("В Турции сейчас солнечно, +28°C."),
+        ]
+    )
+    service = make_service(logger, provider, tmp_path)
+
+    response = await service.process_message(make_request("Какая погода в Турции?"))
+
+    assert response.text == "В Турции сейчас солнечно, +28°C."
+    assert len(provider.requests) == 2
+    # Бракованный отказ в сессию не попал: там только принятый обмен.
+    sessions = ChatSessionStore(directory=tmp_path, logger=logger)
+    history = sessions.load(CHAT)
+    assert [m.content for m in history] == [
+        "Какая погода в Турции?",
+        "В Турции сейчас солнечно, +28°C.",
+    ]
+
+
+async def test_giveup_after_real_attempts_is_answered_as_is(
+    logger: structlog.stdlib.BoundLogger, tmp_path: Path
+) -> None:
+    """Честное «не знаю» после реальной работы с данными — не брак."""
+    provider = ScriptedInferenceProvider(
+        [
+            exec_call_response("curl -s example.com/data"),
+            final_response("Данные недоступны: сервис не отвечает."),
+        ]
+    )
+    service = make_service(logger, provider, tmp_path, with_exec_tool=True)
+
+    response = await service.process_message(make_request("какой курс?"))
+
+    assert "Данные недоступны" in response.text
+    # Один запуск: шаг инструмента + финал. Повтора нет — попытка была честной.
+    assert len(provider.requests) == 2
+
+
+async def test_giveup_after_only_reading_skill_is_retried(
+    logger: structlog.stdlib.BoundLogger, tmp_path: Path
+) -> None:
+    """Прочитал скилл и бросил, не дойдя до данных, — брак: повторяем."""
+    provider = ScriptedInferenceProvider(
+        [
+            exec_call_response("cat skills/weather/SKILL.md"),
+            final_response("Я не знаю точного ответа: доступ к живым данным ограничен."),
+            exec_call_response('curl -s --max-time 15 "wttr.in/Turkey?0"'),
+            final_response("В Турции сейчас ☀️ +28°C, ветер 10 км/ч."),
+        ]
+    )
+    service = make_service(logger, provider, tmp_path, with_exec_tool=True)
+
+    response = await service.process_message(make_request("Какая погода в Турции?"))
+
+    assert response.text == "В Турции сейчас ☀️ +28°C, ветер 10 км/ч."
+    assert len(provider.requests) == 4
+    sessions = ChatSessionStore(directory=tmp_path, logger=logger)
+    history = sessions.load(CHAT)
+    assert [m.content for m in history][-1] == "В Турции сейчас ☀️ +28°C, ветер 10 км/ч."
 
 
 async def test_step_limit_stop_reports_flag_and_persists_exchange(
@@ -314,7 +432,7 @@ async def test_concurrent_messages_in_one_chat_are_serialized(
 
     # Второй запрос увидел обмен первого: обработка была строго последовательной.
     assert [message.content for message in provider.requests[1].messages] == [
-        SYSTEM_PROMPT,
+        f"{SYSTEM_PROMPT}\n\n{build_date_block()}",
         "первый",
         "Ответ модели",
         "второй",
@@ -334,7 +452,10 @@ async def test_reset_session_clears_history(
     await service.process_message(make_request("Как меня зовут?"))
 
     assert provider.requests[1].messages == (
-        InferenceMessage(role=MessageRole.SYSTEM, content=SYSTEM_PROMPT),
+        InferenceMessage(
+            role=MessageRole.SYSTEM,
+            content=f"{SYSTEM_PROMPT}\n\n{build_date_block()}",
+        ),
         InferenceMessage(role=MessageRole.USER, content="Как меня зовут?"),
     )
 

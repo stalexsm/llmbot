@@ -9,7 +9,6 @@ from bot.application.errors import ApplicationError
 from bot.application.service import ApplicationService
 from bot.domain.ids import TelegramChatId
 from bot.telegram.mapper import to_user_request
-from bot.telegram.progress import TelegramCommandProgress
 from bot.telegram.splitter import split_long_text
 
 _START_TEXT = (
@@ -17,7 +16,7 @@ _START_TEXT = (
     "Веду диалог с памятью: у каждого чата своя чат-сессия, история\n"
     "сохраняется между сообщениями и перезапусками бота.\n"
     "Чтобы решить задачу, сам выполняю консольные команды\n"
-    "(инструмент exec) и при необходимости пользуюсь скиллами —\n"
+    "(инструмент execute_command) и при необходимости пользуюсь скиллами —\n"
     "файлами с готовыми инструкциями.\n"
     "Команда /new начинает новую чат-сессию: история сбрасывается."
 )
@@ -88,9 +87,10 @@ class TelegramHandlers:
             return
         request = to_user_request(message)
         self._logger.info("message_received", request_id=request.request_id)
-        progress = TelegramCommandProgress(source=message, logger=self._logger)
         try:
-            response = await self._service.process_message(request, progress)
+            # Прогресс шагов в чат не выводится: выполняемые команды —
+            # внутренняя кухня агента; цикл использует NullProgress.
+            response = await self._service.process_message(request)
         except ApplicationError as exc:
             self._logger.error(
                 "reply_failed",

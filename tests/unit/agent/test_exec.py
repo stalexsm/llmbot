@@ -56,7 +56,7 @@ def make_tool(
 
 
 def exec_call(command: str) -> ToolCall:
-    return ToolCall(name=ToolId("exec"), arguments=json.dumps({"command": command}))
+    return ToolCall(name=ToolId("execute_command"), arguments=json.dumps({"command": command}))
 
 
 def realpath(path: str) -> str:
@@ -90,6 +90,60 @@ async def test_failing_command_is_visible_to_the_model(
     assert "stderr:" in result.content
 
 
+async def test_command_not_found_gets_self_correction_hint(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    tool = make_tool(tmp_path, logger)
+
+    result = await tool.execute(REQUEST_ID, exec_call("definitely-not-a-real-cmd"), NullProgress())
+
+    assert result.succeeded is False
+    assert result.content.startswith("exit_code: 127")
+    assert "hint:" in result.content
+    assert "command not found" in result.content or "нет на машине" in result.content
+
+
+async def test_permission_denied_gets_self_correction_hint(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    (tmp_path / "not-executable.txt").write_text("данные", encoding="utf-8")
+    tool = make_tool(tmp_path, logger)
+
+    # Файл существует, но не исполняем — классическая ошибка 126.
+    result = await tool.execute(REQUEST_ID, exec_call("./not-executable.txt"), NullProgress())
+
+    assert result.succeeded is False
+    assert result.content.startswith("exit_code: 126")
+    assert "hint:" in result.content
+
+
+async def test_successful_command_has_no_hint(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    tool = make_tool(tmp_path, logger)
+
+    result = await tool.execute(REQUEST_ID, exec_call("echo ok"), NullProgress())
+
+    assert "hint:" not in result.content
+
+
+async def test_http_access_denied_in_output_gets_hint(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    """Exit 0 при странице-отказе API (403) — команда «успешна», но данных нет."""
+    tool = make_tool(tmp_path, logger)
+
+    result = await tool.execute(
+        REQUEST_ID,
+        exec_call("echo '<html><title>403 Forbidden</title></html>'"),
+        NullProgress(),
+    )
+
+    assert result.succeeded is True
+    assert result.content.startswith("exit_code: 0")
+    assert "hint:" in result.content
+
+
 async def test_working_directory_is_tool_argument(
     tmp_path: Path, logger: structlog.stdlib.BoundLogger
 ) -> None:
@@ -113,6 +167,20 @@ async def test_hung_command_is_aborted_by_timeout(
     assert "timeout" in result.content
 
 
+async def test_timed_out_command_keeps_partial_output(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    tool = make_tool(tmp_path, logger, timeout=0.5)
+
+    result = await tool.execute(
+        REQUEST_ID, exec_call("echo частичный-вывод; sleep 30"), NullProgress()
+    )
+
+    assert result.succeeded is False
+    assert "timeout" in result.content
+    assert "частичный-вывод" in result.content
+
+
 async def test_long_output_is_trimmed_to_char_limit(
     tmp_path: Path, logger: structlog.stdlib.BoundLogger
 ) -> None:
@@ -133,7 +201,7 @@ async def test_invalid_json_arguments_return_error_result(
     tool = make_tool(tmp_path, logger)
 
     result = await tool.execute(
-        REQUEST_ID, ToolCall(name=ToolId("exec"), arguments="не json"), NullProgress()
+        REQUEST_ID, ToolCall(name=ToolId("execute_command"), arguments="не json"), NullProgress()
     )
 
     assert result.succeeded is False
@@ -146,7 +214,7 @@ async def test_missing_command_argument_returns_error_result(
     tool = make_tool(tmp_path, logger)
 
     result = await tool.execute(
-        REQUEST_ID, ToolCall(name=ToolId("exec"), arguments="{}"), NullProgress()
+        REQUEST_ID, ToolCall(name=ToolId("execute_command"), arguments="{}"), NullProgress()
     )
 
     assert result.succeeded is False
@@ -197,7 +265,7 @@ def test_spec_describes_exec_tool(tmp_path: Path, logger: structlog.stdlib.Bound
 
     spec = tool.spec
 
-    assert spec.name == ToolId("exec")
+    assert spec.name == ToolId("execute_command")
     assert spec.required == ("command",)
     assert [param.name for param in spec.parameters] == ["command"]
     assert all(param.type == "string" for param in spec.parameters)

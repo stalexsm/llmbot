@@ -58,10 +58,12 @@ async def test_simple_question_is_answered_in_one_step(
         USER,
         InferenceMessage(role=MessageRole.ASSISTANT, content="Простой ответ"),
     )
-    # Единственный запрос описывает инструмент exec и содержит системный промпт.
+    # Единственный запрос описывает инструмент execute_command и содержит
+    # системный промпт со свежей датой.
     request = provider.requests[0]
-    assert request.tools[0].name == "exec"
+    assert request.tools[0].name == "execute_command"
     assert [message.role for message in request.messages] == [MessageRole.SYSTEM, MessageRole.USER]
+    assert "Сегодняшняя дата:" in request.messages[0].content
 
 
 async def test_tool_call_then_final_answer(
@@ -87,7 +89,7 @@ async def test_tool_call_then_final_answer(
     ]
     assistant_call = second_request.messages[2]
     assert assistant_call.tool_calls == (
-        ToolCall(name=ToolId("exec"), arguments='{"command": "echo привет"}'),
+        ToolCall(name=ToolId("execute_command"), arguments='{"command": "echo привет"}'),
     )
     tool_result = second_request.messages[3]
     assert tool_result.tool_name is not None
@@ -151,14 +153,32 @@ async def test_step_limit_stops_loop_with_complete_pairs(
             assert message.tool_name is not None
 
 
-async def test_empty_final_answer_raises(
+async def test_empty_final_answer_retries_then_succeeds(
     logger: structlog.stdlib.BoundLogger, tmp_path: Path
 ) -> None:
-    provider = ScriptedInferenceProvider([final_response("   ")])
+    # Первые два ответа пустые — цикл повторяет запрос и добирает содержательный.
+    provider = ScriptedInferenceProvider(
+        [final_response("   "), final_response(""), final_response("Ответ")]
+    )
+    loop = make_loop(logger, provider, tmp_path)
+
+    run = await loop.run(RequestId(str(uuid4())), (), USER)
+
+    assert run.final_answer == "Ответ"
+    assert len(provider.requests) == 3
+
+
+async def test_empty_final_answer_raises_after_retries_exhausted(
+    logger: structlog.stdlib.BoundLogger, tmp_path: Path
+) -> None:
+    provider = ScriptedInferenceProvider([final_response(" ")] * 3)
     loop = make_loop(logger, provider, tmp_path)
 
     with pytest.raises(EmptyInferenceResponseError):
         await loop.run(RequestId(str(uuid4())), (), USER)
+
+    # Исчерпание повторов: три попытки (первая + два повтора), не больше.
+    assert len(provider.requests) == 3
 
 
 async def test_unknown_tool_returns_error_to_model(
@@ -188,8 +208,10 @@ async def test_history_precedes_user_message(
 
     await loop.run(RequestId(str(uuid4())), history, USER)
 
-    assert [message.content for message in provider.requests[0].messages] == [
-        "Ты тестовый агент.",
+    system_content = provider.requests[0].messages[0].content
+    assert system_content.startswith("Ты тестовый агент.")
+    assert "Сегодняшняя дата:" in system_content
+    assert [message.content for message in provider.requests[0].messages][1:] == [
         "старый вопрос",
         "старый ответ",
         "покажи файлы",

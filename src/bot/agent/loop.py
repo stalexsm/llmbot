@@ -12,6 +12,7 @@ from dataclasses import dataclass
 import structlog
 
 from bot.agent.progress import AgentProgress, NullProgress
+from bot.agent.prompts import build_date_block
 from bot.agent.tools import Tool
 from bot.application.errors import EmptyInferenceResponseError
 from bot.domain.ids import ModelId, RequestId
@@ -22,6 +23,11 @@ from bot.inference.provider import InferenceProvider
 
 _NULL_PROGRESS = NullProgress()
 
+# Сколько раз повторять шаг при пустом финальном ответе прежде чем рвать цикл:
+# крошечные reasoning-модели эпизодически выдают пустоту даже в режиме thinking,
+# повтор того же запроса обычно даёт содержательный ответ.
+_EMPTY_STEP_RETRIES = 2
+
 
 @dataclass(frozen=True)
 class AgentRun:
@@ -30,12 +36,15 @@ class AgentRun:
     ``exchange`` — все сообщения обмена (включая сообщение пользователя),
     которые дописываются в чат-сессию: пользователь, пары «вызов
     инструмента → результат», финальный ответ модели.
+    ``failed_tool_results`` — сколько вызовов инструментов завершились
+    ошибкой: признак проблемного запуска для решения о повторе выше.
     """
 
     steps_used: int
     exchange: tuple[InferenceMessage, ...]
     final_answer: str | None
     stopped_by_limit: bool
+    failed_tool_results: int = 0
 
 
 class AgentLoop:
@@ -68,11 +77,18 @@ class AgentLoop:
         reporter = progress if progress is not None else _NULL_PROGRESS
         started_at = time.monotonic()
         messages: list[InferenceMessage] = [
-            InferenceMessage(role=MessageRole.SYSTEM, content=self._system_prompt),
+            # Дата рендерится на каждый запуск: долгоживущий процесс не должен
+            # рассказывать вчерашний день.
+            InferenceMessage(
+                role=MessageRole.SYSTEM,
+                content=f"{self._system_prompt}\n\n{build_date_block()}",
+            ),
             *history,
             user_message,
         ]
         exchange: list[InferenceMessage] = [user_message]
+        empty_retries = 0
+        failed_tool_results = 0
         for step in range(1, self._step_limit + 1):
             response = await self._inference.generate(
                 InferenceRequest(
@@ -89,6 +105,15 @@ class AgentLoop:
             )
             if not response.tool_calls:
                 if not response.content.strip():
+                    if empty_retries < _EMPTY_STEP_RETRIES:
+                        empty_retries += 1
+                        self._logger.warning(
+                            "agent_step_empty_retry",
+                            request_id=request_id,
+                            step=step,
+                            attempt=empty_retries,
+                        )
+                        continue
                     self._logger.warning(
                         "agent_step_empty_final",
                         request_id=request_id,
@@ -104,11 +129,14 @@ class AgentLoop:
                     exchange=tuple(exchange),
                     final_answer=response.content,
                     stopped_by_limit=False,
+                    failed_tool_results=failed_tool_results,
                 )
             messages.append(assistant)
             exchange.append(assistant)
             for call in response.tool_calls:
                 result = await self._execute(request_id, call, reporter)
+                if not result.succeeded:
+                    failed_tool_results += 1
                 result_message = InferenceMessage(
                     role=MessageRole.TOOL,
                     content=result.content,
@@ -128,6 +156,7 @@ class AgentLoop:
             exchange=tuple(exchange),
             final_answer=None,
             stopped_by_limit=True,
+            failed_tool_results=failed_tool_results,
         )
 
     async def _execute(

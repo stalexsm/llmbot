@@ -59,7 +59,7 @@ def exec_call_response(*commands: str) -> InferenceResponse:
         content="",
         tool_calls=tuple(
             ToolCall(
-                name=ToolId("exec"),
+                name=ToolId("execute_command"),
                 arguments=json.dumps({"command": command}, ensure_ascii=False),
             )
             for command in commands

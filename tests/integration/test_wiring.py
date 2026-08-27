@@ -14,13 +14,13 @@ import httpx
 import pytest
 import structlog.stdlib
 from aiogram import Bot
-from aiogram.methods import EditMessageText, SendMessage
+from aiogram.methods import SendMessage
 from httpx import MockTransport
 from pytest import MonkeyPatch
 
 from bot.agent.exec import ExecTool
 from bot.agent.loop import AgentLoop
-from bot.agent.prompts import SYSTEM_PROMPT
+from bot.agent.prompts import SYSTEM_PROMPT, build_date_block
 from bot.application.service import ApplicationService
 from bot.domain.ids import ModelId
 from bot.inference.ollama import OllamaInferenceProvider
@@ -122,7 +122,7 @@ async def test_full_pipeline_second_message_sees_first_exchange(
     await handlers.handle_text(make_telegram_message("Как меня зовут?").as_(bot))
 
     assert [(message["role"], message["content"]) for message in bodies[1]["messages"]] == [
-        ("system", SYSTEM_PROMPT),
+        ("system", f"{SYSTEM_PROMPT}\n\n{build_date_block()}"),
         ("user", "Меня зовут Саша"),
         ("assistant", "Ответ"),
         ("user", "Как меня зовут?"),
@@ -151,7 +151,7 @@ async def test_full_pipeline_exec_tool_roundtrip(
                         "tool_calls": [
                             {
                                 "function": {
-                                    "name": "exec",
+                                    "name": "execute_command",
                                     "arguments": {"command": "echo привет из shell"},
                                 }
                             }
@@ -172,7 +172,7 @@ async def test_full_pipeline_exec_tool_roundtrip(
 
     # Первый запрос: описание инструмента и отключённые размышления.
     first_body = bodies[0]
-    assert first_body["tools"][0]["function"]["name"] == "exec"
+    assert first_body["tools"][0]["function"]["name"] == "execute_command"
     assert first_body["think"] is False
     # Второй запрос: пара «вызов → результат» с выводом настоящей команды.
     second_messages = bodies[1]["messages"]
@@ -182,16 +182,14 @@ async def test_full_pipeline_exec_tool_roundtrip(
         "assistant",
         "tool",
     ]
-    assert second_messages[2]["tool_calls"][0]["function"]["name"] == "exec"
+    assert second_messages[2]["tool_calls"][0]["function"]["name"] == "execute_command"
     tool_message = second_messages[3]
-    assert tool_message["tool_name"] == "exec"
+    assert tool_message["tool_name"] == "execute_command"
     assert "привет из shell" in tool_message["content"]
-    # Пользователь увидел шаги и финальный ответ.
+    # Прогресс шагов в чат не выводится: пользователь видит только финальный ответ.
     calls = [call.args[1] for call in request_mock.await_args_list]
-    assert [type(call) for call in calls] == [SendMessage, EditMessageText, SendMessage]
-    assert calls[0].text == "⏳ echo привет из shell"
-    assert calls[1].text == "✅ echo привет из shell"
-    assert calls[2].text == "Модель увидела вывод команды"
+    assert [type(call) for call in calls] == [SendMessage]
+    assert calls[0].text == "Модель увидела вывод команды"
 
 
 async def test_full_pipeline_step_limit_returns_honest_stop(
@@ -208,7 +206,7 @@ async def test_full_pipeline_step_limit_returns_honest_stop(
                     "role": "assistant",
                     "content": "",
                     "tool_calls": [
-                        {"function": {"name": "exec", "arguments": {"command": "true"}}}
+                        {"function": {"name": "execute_command", "arguments": {"command": "true"}}}
                     ],
                 },
                 "done": True,

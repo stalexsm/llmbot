@@ -21,6 +21,48 @@ from bot.domain.tools import ToolCall, ToolParameter, ToolResult, ToolSpec
 
 _TRUNCATION_MARKER = "\n…[вывод обрезан]"
 
+# Подсказки самокоррекции для типовых shell-ошибок: результат инструмента —
+# единственный канал обратной связи для модели, а крошечные модели регулярно
+# выдумывают несуществующие программы (например «weather» вместо чтения скилла).
+# Подсказка не отменяет факты (exit code, stderr остаются как есть), она лишь
+# подсказывает причину и правильный следующий шаг.
+_SELF_CORRECTION_HINTS: dict[int, str] = {
+    126: (
+        "\n\nhint: оболочка не смогла исполнить команду (файл не является программой). "
+        "Вероятно, имя команды или её аргументы выдуманы. exec запускает только реальные "
+        "утилиты (cat, ls, curl, …); файлы читаются командой cat. Если задача подходит под "
+        "скилл из индекса, начни с команды: cat skills/<имя>/SKILL.md"
+    ),
+    127: (
+        "\n\nhint: такой программы нет на машине (command not found). Не выдумывай имена "
+        "команд: exec запускает только реальные утилиты (cat, ls, curl, …). Если задача "
+        "подходит под скилл из индекса, начни с команды: cat skills/<имя>/SKILL.md"
+    ),
+}
+
+
+def _self_correction_hint(returncode: int | None, stdout: str = "", stderr: str = "") -> str:
+    """Подсказка модели для типовых сбоев; пустая строка — без подсказки."""
+    hint = _SELF_CORRECTION_HINTS.get(returncode, "") if returncode is not None else ""
+    if hint:
+        return hint
+    if returncode == 0:
+        lowered = f"{stdout}\n{stderr}".lower()
+        if (
+            "403" in lowered
+            or "401" in lowered
+            or "forbidden" in lowered
+            or "unauthorized" in lowered
+        ):
+            # Команда «успешна» (exit 0), но сервис отдал страницу-отказ доступа:
+            # API с ключом, выдумывать который нельзя.
+            hint = (
+                "\n\nhint: сервис ответил отказом доступа (403/401): этому API нужен "
+                "платный ключ. Не выдумывай API с ключами — используй бесплатный "
+                "источник без авторизации из файла скилла: cat skills/<имя>/SKILL.md"
+            )
+    return hint
+
 
 def _truncate(text: str, limit: int) -> str:
     """Обрезать текст до лимита, оставив маркер обрезки в пределах лимита."""
@@ -45,10 +87,11 @@ class ExecTool:
         self._max_output_chars = max_output_chars
         self._logger = logger.bind(component="exec_tool")
         self._spec = ToolSpec(
-            name=ToolId("exec"),
+            name=ToolId("execute_command"),
             description=(
-                "Выполнить консольную команду в shell на машине агента (одна строка). "
-                "Возвращает exit code, stdout и stderr."
+                "Выполнить одну строку shell в рабочем каталоге проекта; возвращает "
+                "exit code, stdout и stderr. Для задач с живыми данными сначала прочитай "
+                "файл подходящего скилла командой cat skills/<имя>/SKILL.md и следуй ему."
             ),
             parameters=(
                 ToolParameter(
@@ -98,22 +141,38 @@ class ExecTool:
             cwd=self._cwd,
             start_new_session=True,
         )
+        communicate_task = asyncio.create_task(process.communicate())
+        stdout = stderr = b""
+        timed_out = False
         try:
+            # shield: таймаут отменяет ожидание, но не само чтение — иначе
+            # уже вычитанный вывод пропадёт вместе с задачей.
             stdout, stderr = await asyncio.wait_for(
-                process.communicate(),
-                timeout=self._timeout_seconds,
+                asyncio.shield(communicate_task), timeout=self._timeout_seconds
             )
         except TimeoutError:
+            timed_out = True
             await self._kill(process)
+            # Группа убита — потоки закрываются, и та же задача докатывается
+            # до конца, отдавая и частичный вывод для следующей попытки модели.
+            with contextlib.suppress(Exception):
+                stdout, stderr = await communicate_task
+        if timed_out:
             content = (
                 f"exit_code: timeout (limit {self._timeout_seconds} s)\n"
-                "stdout:\n\nstderr:\nкоманда прервана: превышен таймаут"
+                f"stdout:\n{stdout.decode(errors='replace')}\n"
+                f"stderr:\n{stderr.decode(errors='replace')}"
             )
             return ToolResult(content=_truncate(content, self._max_output_chars), succeeded=False)
         output_text = (
             f"exit_code: {process.returncode}\n"
             f"stdout:\n{stdout.decode(errors='replace')}\n"
             f"stderr:\n{stderr.decode(errors='replace')}"
+            + _self_correction_hint(
+                process.returncode,
+                stdout.decode(errors="replace"),
+                stderr.decode(errors="replace"),
+            )
         )
         return ToolResult(
             content=_truncate(output_text, self._max_output_chars),
