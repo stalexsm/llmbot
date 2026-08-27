@@ -6,6 +6,15 @@
   `TELEGRAM_BOT_TOKEN`. Валидация на старте, fail fast при отсутствии/невалидности.
 - Токен живёт только в env/`.env`: не в коде, не в логах, не в Git.
   `.env` в `.gitignore`; вместо него коммитится `env.example`.
+- Агентные лимиты — тоже часть `Settings` и приходят из env: лимит шагов
+  цикла (`AGENT_MAX_STEPS`, 10), окно истории чат-сессии
+  (`AGENT_HISTORY_MAX_MESSAGES`, 20), таймаут команды exec
+  (`AGENT_EXEC_TIMEOUT_SECONDS`, 60), обрезка вывода команды
+  (`AGENT_EXEC_MAX_OUTPUT_CHARS`, 4000), каталог скиллов
+  (`AGENT_SKILLS_DIRECTORY`, `skills`), allowlist чатов
+  (`TELEGRAM_ALLOWED_CHAT_IDS`, пусто — бот отвечает всем).
+- Каталог данных чат-сессий фиксирован кодом — `.data/chats/` и исключён
+  из Git: в свежем клоне его нет, создаётся при первой записи (`mkdir`).
 
 ## Логирование
 

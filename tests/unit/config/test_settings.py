@@ -14,7 +14,10 @@ def make_settings(monkeypatch: MonkeyPatch, raw_value: str | None) -> Settings:
         monkeypatch.delenv("TELEGRAM_ALLOWED_CHAT_IDS", raising=False)
     else:
         monkeypatch.setenv("TELEGRAM_ALLOWED_CHAT_IDS", raw_value)
-    return Settings()
+    # ``_env_file=None`` отключает чтение локального ``.env``: тесты
+    # проверяют только переменные окружения и не зависят от содержимого
+    # рабочего каталога разработчика.
+    return Settings(_env_file=None)
 
 
 def test_allowlist_missing_means_empty(monkeypatch: MonkeyPatch) -> None:
