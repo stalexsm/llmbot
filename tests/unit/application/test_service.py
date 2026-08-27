@@ -34,6 +34,7 @@ from bot.sessions.store import ChatSessionStore
 from tests.fakes import (
     FailingInferenceProvider,
     MockInferenceProvider,
+    RecordingProgress,
     ScriptedInferenceProvider,
     exec_call_response,
     final_response,
@@ -41,17 +42,6 @@ from tests.fakes import (
 
 CHAT = TelegramChatId(100)
 SYSTEM_PROMPT = "Ты тестовый агент."
-
-
-class RecordingProgress:
-    def __init__(self) -> None:
-        self.events: list[tuple[str, str, bool | None]] = []
-
-    async def command_started(self, command: str) -> None:
-        self.events.append(("started", command, None))
-
-    async def command_finished(self, command: str, succeeded: bool) -> None:
-        self.events.append(("finished", command, succeeded))
 
 
 def make_request(text: str) -> UserMessageRequest:

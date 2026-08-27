@@ -78,7 +78,7 @@ async def run() -> None:
         )
         # Индекс скиллов собирается один раз на старте: новый файл попадёт
         # в индекс при следующем запуске, без правки кода.
-        skills = load_skills(settings.agent_skills_directory)
+        skills = load_skills(settings.agent_skills_directory, logger)
         if not settings.agent_skills_directory.is_dir():
             logger.warning(
                 "skills_directory_missing",

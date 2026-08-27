@@ -13,6 +13,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+import structlog
+
 # Описание в индексе обрезается: это оглавление, а не сам скилл.
 _MAX_DESCRIPTION_CHARS = 160
 
@@ -48,15 +50,22 @@ def parse_skill(file: Path, text: str) -> SkillEntry | None:
     return SkillEntry(name=name, description=description, file=file)
 
 
-def load_skills(directory: Path) -> tuple[SkillEntry, ...]:
+def load_skills(directory: Path, logger: structlog.stdlib.BoundLogger) -> tuple[SkillEntry, ...]:
     """Собрать индекс скиллов из каталога, отсортированный по имени.
 
     Ищет ``<каталог>/<имя>/SKILL.md``; файлы без описания пропускаются.
+    Нечитаемый или не-UTF8 файл не должен ронять старт (добавление скилла —
+    добавление файла): он пропускается с warning, ссылающимся на файл.
     Несуществующий каталог — пустой индекс (бот работает без скиллов).
     """
     entries = []
     for file in sorted(directory.glob("*/SKILL.md")):
-        entry = parse_skill(file, file.read_text(encoding="utf-8"))
+        try:
+            text = file.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            logger.warning("skill_load_failed", file=str(file))
+            continue
+        entry = parse_skill(file, text)
         if entry is not None:
             entries.append(entry)
     return tuple(entries)

@@ -3,6 +3,8 @@
 from pathlib import Path
 
 import pytest
+import structlog.stdlib
+from structlog.testing import CapturingLogger
 
 from bot.agent.prompts import SYSTEM_PROMPT, build_date_block, build_system_prompt
 from bot.agent.skills import SkillEntry, load_skills, parse_skill, render_skills_index
@@ -154,16 +156,20 @@ class TestParseSkill:
 class TestLoadSkills:
     """Сборка индекса из каталога: раскладка, порядок, фильтры, устойчивость."""
 
-    def test_entries_sorted_by_name(self, tmp_path: Path) -> None:
+    def test_entries_sorted_by_name(
+        self, tmp_path: Path, logger: structlog.stdlib.BoundLogger
+    ) -> None:
         write_skill(tmp_path, "zz-last", "Description: Последний.\n")
         write_skill(tmp_path, "aa-first", "Description: Первый.\n")
 
-        entries = load_skills(tmp_path)
+        entries = load_skills(tmp_path, logger)
 
         assert [entry.name for entry in entries] == ["aa-first", "zz-last"]
         assert entries[0].file == tmp_path / "aa-first" / "SKILL.md"
 
-    def test_stray_files_and_folders_without_skill_md_are_ignored(self, tmp_path: Path) -> None:
+    def test_stray_files_and_folders_without_skill_md_are_ignored(
+        self, tmp_path: Path, logger: structlog.stdlib.BoundLogger
+    ) -> None:
         write_skill(tmp_path, "real", "Description: Настоящий скилл.\n")
         # Мусор в корне каталога скиллов.
         (tmp_path / "notes.txt").write_text("не скилл\n", encoding="utf-8")
@@ -174,29 +180,61 @@ class TestLoadSkills:
         empty.mkdir()
         (empty / "TODO.txt").write_text("нет файла SKILL.md\n", encoding="utf-8")
 
-        assert [entry.name for entry in load_skills(tmp_path)] == ["real"]
+        assert [entry.name for entry in load_skills(tmp_path, logger)] == ["real"]
 
-    def test_skill_without_description_is_skipped(self, tmp_path: Path) -> None:
+    def test_skill_without_description_is_skipped(
+        self, tmp_path: Path, logger: structlog.stdlib.BoundLogger
+    ) -> None:
         write_skill(tmp_path, "good", "Description: Хороший скилл.\n")
         write_skill(tmp_path, "broken", "# Только заголовок\n")
 
-        assert [entry.name for entry in load_skills(tmp_path)] == ["good"]
+        assert [entry.name for entry in load_skills(tmp_path, logger)] == ["good"]
 
-    def test_missing_directory_gives_empty_index(self, tmp_path: Path) -> None:
-        assert load_skills(tmp_path / "нет-такого") == ()
+    def test_unreadable_or_not_utf8_skill_is_skipped_with_warning(
+        self,
+        tmp_path: Path,
+        logger: structlog.stdlib.BoundLogger,
+        capturing_logger: CapturingLogger,
+    ) -> None:
+        """Битый файл не роняет старт: скилл пропускается, в лог уходит warning с путём."""
+        write_skill(tmp_path, "good", "Description: Хороший скилл.\n")
+        bad = tmp_path / "bad" / "SKILL.md"
+        bad.parent.mkdir()
+        bad.write_bytes(b"\xff\xfe\xff\x00 garbage")
 
-    def test_new_folder_appears_in_index_on_next_load(self, tmp_path: Path) -> None:
+        entries = load_skills(tmp_path, logger)
+
+        assert [entry.name for entry in entries] == ["good"]
+        failures = [
+            call
+            for call in capturing_logger.calls
+            if call.kwargs.get("event") == "skill_load_failed"
+        ]
+        assert len(failures) == 1
+        assert failures[0].method_name == "warning"
+        assert failures[0].kwargs["file"] == str(bad)
+
+    def test_missing_directory_gives_empty_index(
+        self, tmp_path: Path, logger: structlog.stdlib.BoundLogger
+    ) -> None:
+        assert load_skills(tmp_path / "нет-такого", logger) == ()
+
+    def test_new_folder_appears_in_index_on_next_load(
+        self, tmp_path: Path, logger: structlog.stdlib.BoundLogger
+    ) -> None:
         """Новый скилл подхватывается без правки кода: повторная сборка его видит."""
         write_skill(tmp_path, "weather", "Description: Погода в Минске.\n")
-        assert [entry.name for entry in load_skills(tmp_path)] == ["weather"]
+        assert [entry.name for entry in load_skills(tmp_path, logger)] == ["weather"]
 
         write_skill(tmp_path, "notes", "Description: Заметки пользователя.\n")
 
-        assert [entry.name for entry in load_skills(tmp_path)] == ["notes", "weather"]
+        assert [entry.name for entry in load_skills(tmp_path, logger)] == ["notes", "weather"]
 
-    def test_repo_weather_skill_parses(self, repo_root: Path) -> None:
+    def test_repo_weather_skill_parses(
+        self, repo_root: Path, logger: structlog.stdlib.BoundLogger
+    ) -> None:
         """Закоммиченный скилл погоды лежит по канону и читается."""
-        entries = load_skills(repo_root / "skills")
+        entries = load_skills(repo_root / "skills", logger)
 
         weather = next(entry for entry in entries if entry.name == "weather")
         assert weather.file == repo_root / "skills" / "weather" / "SKILL.md"

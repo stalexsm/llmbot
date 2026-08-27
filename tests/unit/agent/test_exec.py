@@ -1,5 +1,6 @@
 """Unit tests for the exec tool: shell execution with timeout and output trimming."""
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -8,23 +9,12 @@ import pytest
 import structlog.stdlib
 from structlog.testing import CapturingLogger
 
+from bot.agent import exec as exec_module
 from bot.agent.exec import ExecTool
 from bot.agent.progress import NullProgress
 from bot.domain.ids import RequestId, ToolId
 from bot.domain.tools import ToolCall
-
-
-class RecordingProgress:
-    """Progress double: фиксирует вызовы в порядке поступления."""
-
-    def __init__(self) -> None:
-        self.events: list[tuple[str, str, bool | None]] = []
-
-    async def command_started(self, command: str) -> None:
-        self.events.append(("started", command, None))
-
-    async def command_finished(self, command: str, succeeded: bool) -> None:
-        self.events.append(("finished", command, succeeded))
+from tests.fakes import RecordingProgress
 
 
 class FailingProgress:
@@ -162,6 +152,31 @@ async def test_hung_command_is_aborted_by_timeout(
     tool = make_tool(tmp_path, logger, timeout=0.2)
 
     result = await tool.execute(REQUEST_ID, exec_call("sleep 30"), NullProgress())
+
+    assert result.succeeded is False
+    assert "timeout" in result.content
+
+
+async def test_execute_returns_after_process_group_escape(
+    tmp_path: Path,
+    logger: structlog.stdlib.BoundLogger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Сбежавший из группы потомок держит пайпы: execute() всё равно возвращается.
+
+    Регрессия: killpg не берёт потомка, ушедшего в новую сессию, его копии
+    stdout/stderr не дают EOF, и communicate ждал вечно — чат замерал вместе
+    с блокировкой сессии. Дренаж после kill ограничен отдельным таймаутом.
+    """
+    monkeypatch.setattr(exec_module, "_POST_KILL_DRAIN_SECONDS", 0.2)
+    tool = make_tool(tmp_path, logger, timeout=0.3)
+    # Внутренний sh уходит сразу после echo, а python3 перед сном уходит в новую
+    # сессию (os.setsid) и держит унаследованные пайпы: EOF после killpg не придет.
+    command = "sh -c 'python3 -c \"import os, time; os.setsid(); time.sleep(2)\" & echo started'"
+
+    result = await asyncio.wait_for(
+        tool.execute(REQUEST_ID, exec_call(command), NullProgress()), timeout=10.0
+    )
 
     assert result.succeeded is False
     assert "timeout" in result.content

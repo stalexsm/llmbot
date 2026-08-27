@@ -48,7 +48,7 @@ async def test_agent_reads_skill_and_executes_its_command(
 ) -> None:
     """Сценарий «погода»: агент находит скилл в индексе, читает файл, выполняет команду."""
     skills = make_skills_dir(tmp_path)
-    system_prompt = build_system_prompt(render_skills_index(load_skills(skills)))
+    system_prompt = build_system_prompt(render_skills_index(load_skills(skills, logger)))
     provider = ScriptedInferenceProvider(
         [
             exec_call_response("cat skills/weather/SKILL.md"),
@@ -107,7 +107,7 @@ async def test_new_skill_file_joins_index_without_code_changes(
     """Скилл, добавленный файлом, виден в индексе при следующей сборке промпта."""
     skills = make_skills_dir(tmp_path)
 
-    first_prompt = build_system_prompt(render_skills_index(load_skills(skills)))
+    first_prompt = build_system_prompt(render_skills_index(load_skills(skills, logger)))
     assert "currency" not in first_prompt
 
     currency_dir = skills / "currency"
@@ -117,7 +117,7 @@ async def test_new_skill_file_joins_index_without_code_changes(
         "Выполни curl-запрос курса.\n",
         encoding="utf-8",
     )
-    second_prompt = build_system_prompt(render_skills_index(load_skills(skills)))
+    second_prompt = build_system_prompt(render_skills_index(load_skills(skills, logger)))
 
     assert "currency" in second_prompt
     assert "skills/currency/SKILL.md" in second_prompt

@@ -21,6 +21,12 @@ from bot.domain.tools import ToolCall, ToolParameter, ToolResult, ToolSpec
 
 _TRUNCATION_MARKER = "\n…[вывод обрезан]"
 
+# Дренаж потоков после убийства группы: обычно мгновенный (EOF приходит
+# сразу), но потомок, сбежавший из группы через новую сессию, может держать
+# пайпы открытыми вечно. Короткая верхняя граница гарантирует, что после
+# таймаута execute() вернёт результат, а не заморозит чат навсегда.
+_POST_KILL_DRAIN_SECONDS: float = 5.0
+
 # Подсказки самокоррекции для типовых shell-ошибок: результат инструмента —
 # единственный канал обратной связи для модели, а крошечные модели регулярно
 # выдумывают несуществующие программы (например «weather» вместо чтения скилла).
@@ -155,8 +161,22 @@ class ExecTool:
             await self._kill(process)
             # Группа убита — потоки закрываются, и та же задача докатывается
             # до конца, отдавая и частичный вывод для следующей попытки модели.
-            with contextlib.suppress(Exception):
-                stdout, stderr = await communicate_task
+            # Сбежавший из группы потомок (новая сессия) держит пайпы открытыми
+            # и EOF не придёт, поэтому дренаж ограничен коротким таймаутом:
+            # execute() обязан вернуться, чтобы чат не замер вместе с блокировкой.
+            try:
+                stdout, stderr = await asyncio.wait_for(
+                    communicate_task, timeout=_POST_KILL_DRAIN_SECONDS
+                )
+            except Exception:
+                # Частичный вывод теряется вместе с отменённой задачей — сознательная
+                # плата за гарантированный возврат. Транспорты пайпов закрываем, чтобы
+                # не оставлять открытых дескрипторов позади отменённой задачи: публичного
+                # способа закрыть их у asyncio нет, читаем внутренний хэндл защищённо.
+                transport = getattr(process, "_transport", None)
+                if transport is not None:
+                    with contextlib.suppress(Exception):
+                        transport.close()
         if timed_out:
             content = (
                 f"exit_code: timeout (limit {self._timeout_seconds} s)\n"
