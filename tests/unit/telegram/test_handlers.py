@@ -59,7 +59,7 @@ def make_service(
 def make_handlers(
     logger: structlog.stdlib.BoundLogger, service: ApplicationService
 ) -> TelegramHandlers:
-    return TelegramHandlers(service=service, logger=logger)
+    return TelegramHandlers(service=service, logger=logger, allowed_chat_ids=frozenset())
 
 
 def make_stub_handlers(

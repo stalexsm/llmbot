@@ -60,7 +60,7 @@ def make_stack(
         history_limit=20,
         logger=logger,
     )
-    return TelegramHandlers(service=service, logger=logger)
+    return TelegramHandlers(service=service, logger=logger, allowed_chat_ids=frozenset())
 
 
 def sent_message(request_mock: AsyncMock) -> SendMessage:

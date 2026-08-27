@@ -36,11 +36,12 @@ class TelegramHandlers:
         self,
         service: ApplicationService,
         logger: structlog.stdlib.BoundLogger,
-        allowed_chat_ids: frozenset[TelegramChatId] = frozenset(),
+        allowed_chat_ids: frozenset[TelegramChatId],
     ) -> None:
         self._service = service
         self._logger = logger.bind(component="telegram_handlers")
         # Пустой список — бот отвечает всем; заполненный — только перечисленным чатам.
+        # Политика живёт в Settings; хендлер получает уже решённое множество.
         self._allowed_chat_ids = allowed_chat_ids
 
     def register(self, router: Router) -> None:
@@ -48,21 +49,23 @@ class TelegramHandlers:
         router.message.register(self.handle_new, Command("new"))
         router.message.register(self.handle_text, F.text, ~F.text.startswith("/"))
 
-    def _is_allowed(self, message: Message) -> bool:
+    def _chat_not_allowed(self, message: Message) -> bool:
+        """Чат не входит в allowlist; чужой чат логируется и молча игнорируется."""
         if not self._allowed_chat_ids:
-            return True
-        return TelegramChatId(message.chat.id) in self._allowed_chat_ids
+            return False
+        if TelegramChatId(message.chat.id) in self._allowed_chat_ids:
+            return False
+        self._logger.info("chat_not_allowed", chat_id=message.chat.id)
+        return True
 
     async def handle_start(self, message: Message) -> None:
-        if not self._is_allowed(message):
-            self._logger.info("chat_not_allowed", chat_id=message.chat.id)
+        if self._chat_not_allowed(message):
             return
         self._logger.info("start_command_received", chat_id=message.chat.id)
         await message.answer(_START_TEXT)
 
     async def handle_new(self, message: Message) -> None:
-        if not self._is_allowed(message):
-            self._logger.info("chat_not_allowed", chat_id=message.chat.id)
+        if self._chat_not_allowed(message):
             return
         try:
             await self._service.reset_session(TelegramChatId(message.chat.id))
@@ -78,8 +81,7 @@ class TelegramHandlers:
         await message.answer(_NEW_CHAT_TEXT)
 
     async def handle_text(self, message: Message) -> None:
-        if not self._is_allowed(message):
-            self._logger.info("chat_not_allowed", chat_id=message.chat.id)
+        if self._chat_not_allowed(message):
             return
         request = to_user_request(message)
         self._logger.info("message_received", request_id=request.request_id)
