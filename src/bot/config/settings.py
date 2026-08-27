@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen3:1.7b"
 
+    # Режим размышлений модели (think). Маленьким reasoning-моделям вроде
+    # qwen3 он нужен: без него они могут молча выдавать пустой ответ
+    # на многошаговых инструментальных задачах.
+    # Моделям без поддержки thinking оставь false.
+    ollama_think: bool = False
+
     # Allowlist чатов через запятую: пусто — бот отвечает всем,
     # заполнен — сообщения из чужих чатов молча игнорируются.
     telegram_allowed_chat_ids: Annotated[frozenset[TelegramChatId], NoDecode] = frozenset()

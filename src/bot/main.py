@@ -55,13 +55,20 @@ async def run() -> None:
     settings = Settings()  # pydantic-settings validates configuration and fails fast
     logger = configure_logging(settings)
 
-    http_client = httpx.AsyncClient(timeout=settings.ollama_timeout_seconds)
+    # trust_env=False: клиент ходит в локальный Ollama напрямую. Иначе httpx
+    # подхватывает прокси из переменных окружения или системных настроек macOS,
+    # запросы к localhost уходят в прокси-клиент и рвутся (503 на каждый запрос).
+    http_client = httpx.AsyncClient(
+        timeout=settings.ollama_timeout_seconds,
+        trust_env=False,
+    )
     try:
         inference = OllamaInferenceProvider(
             client=http_client,
             base_url=settings.ollama_base_url,
             timeout_seconds=settings.ollama_timeout_seconds,
             logger=logger,
+            think=settings.ollama_think,
         )
         exec_tool = ExecTool(
             cwd=Path.cwd(),

@@ -39,3 +39,16 @@ def test_allowlist_comma_separated_ids(monkeypatch: MonkeyPatch) -> None:
 def test_allowlist_invalid_id_fails_fast(monkeypatch: MonkeyPatch) -> None:
     with pytest.raises(ValidationError):
         make_settings(monkeypatch, "123, oops")
+
+
+def test_think_missing_means_disabled(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.delenv("OLLAMA_THINK", raising=False)
+    assert Settings(_env_file=None).ollama_think is False
+
+
+@pytest.mark.parametrize("raw", ["true", "1"])
+def test_think_enabled_from_env(monkeypatch: MonkeyPatch, raw: str) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("OLLAMA_THINK", raw)
+    assert Settings(_env_file=None).ollama_think is True

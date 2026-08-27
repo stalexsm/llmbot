@@ -70,6 +70,41 @@ async def test_successful_inference(logger: structlog.stdlib.BoundLogger) -> Non
     assert response.content == "Ответ модели"
 
 
+async def test_think_is_false_by_default(
+    logger: structlog.stdlib.BoundLogger,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        assert body["think"] is False
+        return httpx.Response(200, json={"message": {"role": "assistant", "content": "Ответ"}})
+
+    client, provider = make_provider(logger, handler)
+
+    async with client:
+        await provider.generate(make_request())
+
+
+async def test_think_true_reaches_the_wire(
+    logger: structlog.stdlib.BoundLogger,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        assert body["think"] is True
+        return httpx.Response(200, json={"message": {"role": "assistant", "content": "Ответ"}})
+
+    client = httpx.AsyncClient(transport=MockTransport(handler))
+    provider = OllamaInferenceProvider(
+        client=client,
+        base_url="http://ollama.test",
+        timeout_seconds=0.5,
+        logger=logger,
+        think=True,
+    )
+
+    async with client:
+        await provider.generate(make_request())
+
+
 async def test_connect_error_maps_to_unavailable(
     logger: structlog.stdlib.BoundLogger,
 ) -> None:
