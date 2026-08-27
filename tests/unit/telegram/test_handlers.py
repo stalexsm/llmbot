@@ -13,8 +13,9 @@ import bot.telegram.handlers as handlers_module
 from bot.agent.exec import ExecTool
 from bot.agent.loop import AgentLoop
 from bot.application.errors import InferenceTimeoutError, InferenceUnavailableError
+from bot.application.models import UserMessageResponse
 from bot.application.service import ApplicationService
-from bot.domain.ids import ModelId, TelegramChatId
+from bot.domain.ids import ModelId, RequestId, TelegramChatId
 from bot.inference.provider import InferenceProvider
 from bot.sessions.store import ChatSessionStore
 from bot.telegram.handlers import TelegramHandlers
@@ -59,6 +60,21 @@ def make_handlers(
     logger: structlog.stdlib.BoundLogger, service: ApplicationService
 ) -> TelegramHandlers:
     return TelegramHandlers(service=service, logger=logger)
+
+
+def make_stub_handlers(
+    logger: structlog.stdlib.BoundLogger,
+    allowed_chat_ids: frozenset[TelegramChatId],
+    *,
+    response_text: str = "Ответ модели",
+) -> tuple[TelegramHandlers, AsyncMock]:
+    """Хендлеры с полностью подменённым сервисом: проверяется только Telegram-слой."""
+    service = AsyncMock(spec=ApplicationService)
+    service.process_message.return_value = UserMessageResponse(
+        request_id=RequestId("stub-request"), text=response_text
+    )
+    handlers = TelegramHandlers(service=service, logger=logger, allowed_chat_ids=allowed_chat_ids)
+    return handlers, service
 
 
 def mock_telegram_api(bot: Bot, monkeypatch: MonkeyPatch) -> AsyncMock:
@@ -272,3 +288,84 @@ async def test_step_limit_receives_honest_stop_message(
         SendMessage,
     ]
     assert calls[4].text == handlers_module._STEP_LIMIT_TEXT
+
+
+# --- Allowlist чатов ---------------------------------------------------------
+
+
+async def test_empty_allowlist_answers_any_chat(
+    bot: Bot, logger: structlog.stdlib.BoundLogger, monkeypatch: MonkeyPatch
+) -> None:
+    handlers, service = make_stub_handlers(logger, allowed_chat_ids=frozenset())
+    request_mock = mock_telegram_api(bot, monkeypatch)
+
+    await handlers.handle_text(make_telegram_message("Привет", chat_id=999).as_(bot))
+
+    service.process_message.assert_awaited_once()
+    assert sent_message(request_mock).text == "Ответ модели"
+
+
+async def test_filled_allowlist_ignores_foreign_chat_silently(
+    bot: Bot, logger: structlog.stdlib.BoundLogger, monkeypatch: MonkeyPatch
+) -> None:
+    handlers, service = make_stub_handlers(
+        logger, allowed_chat_ids=frozenset({TelegramChatId(100)})
+    )
+    request_mock = mock_telegram_api(bot, monkeypatch)
+
+    await handlers.handle_text(make_telegram_message("Привет", chat_id=999).as_(bot))
+
+    service.process_message.assert_not_awaited()
+    assert request_mock.await_count == 0
+
+
+async def test_filled_allowlist_ignores_foreign_commands_silently(
+    bot: Bot, logger: structlog.stdlib.BoundLogger, monkeypatch: MonkeyPatch
+) -> None:
+    handlers, service = make_stub_handlers(
+        logger, allowed_chat_ids=frozenset({TelegramChatId(100)})
+    )
+    request_mock = mock_telegram_api(bot, monkeypatch)
+
+    await handlers.handle_start(make_telegram_message("/start", chat_id=999).as_(bot))
+    await handlers.handle_new(make_telegram_message("/new", chat_id=999).as_(bot))
+
+    service.reset_session.assert_not_awaited()
+    assert request_mock.await_count == 0
+
+
+async def test_filled_allowlist_listed_chat_works_as_before(
+    bot: Bot, logger: structlog.stdlib.BoundLogger, monkeypatch: MonkeyPatch
+) -> None:
+    handlers, service = make_stub_handlers(
+        logger, allowed_chat_ids=frozenset({TelegramChatId(100)})
+    )
+    request_mock = mock_telegram_api(bot, monkeypatch)
+
+    await handlers.handle_text(make_telegram_message("Привет").as_(bot))
+    await handlers.handle_new(make_telegram_message("/new").as_(bot))
+
+    service.process_message.assert_awaited_once()
+    service.reset_session.assert_awaited_once_with(TelegramChatId(100))
+    assert [call.args[1].text for call in request_mock.await_args_list] == [
+        "Ответ модели",
+        handlers_module._NEW_CHAT_TEXT,
+    ]
+
+
+async def test_long_reply_arrives_as_ordered_parts(
+    bot: Bot, logger: structlog.stdlib.BoundLogger, monkeypatch: MonkeyPatch
+) -> None:
+    long_text = "строка ответа\n" * 600  # 8400 символов: строки по 14
+    handlers, _service = make_stub_handlers(
+        logger, allowed_chat_ids=frozenset(), response_text=long_text
+    )
+    request_mock = mock_telegram_api(bot, monkeypatch)
+
+    await handlers.handle_text(make_telegram_message("Покажи много текста").as_(bot))
+
+    sent = [call.args[1] for call in request_mock.await_args_list]
+    assert all(type(call) is SendMessage for call in sent)
+    # Разрезы приходятся на границы строк: 285 строк по 14 символов = 3990 в части.
+    assert [len(call.text) for call in sent] == [3990, 3990, 420]
+    assert "".join(call.text for call in sent) == long_text

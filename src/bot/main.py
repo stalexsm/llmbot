@@ -107,8 +107,16 @@ async def run() -> None:
         )
         try:
             dispatcher = Dispatcher()
-            TelegramHandlers(service=service, logger=logger).register(dispatcher)
-            logger.info("bot_started", model=settings.ollama_model)
+            TelegramHandlers(
+                service=service,
+                logger=logger,
+                allowed_chat_ids=settings.telegram_allowed_chat_ids,
+            ).register(dispatcher)
+            logger.info(
+                "bot_started",
+                model=settings.ollama_model,
+                allowed_chats=len(settings.telegram_allowed_chat_ids),
+            )
             await dispatcher.start_polling(bot)
         finally:
             await bot.session.close()

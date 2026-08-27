@@ -5,10 +5,12 @@ inside the application operates on plain typed dataclasses.
 """
 
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field, SecretStr, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from bot.domain.ids import TelegramChatId
 
 
 class Settings(BaseSettings):
@@ -26,6 +28,24 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr
     ollama_base_url: str = "http://localhost:11434"
     ollama_model: str = "qwen3:1.7b"
+
+    # Allowlist чатов через запятую: пусто — бот отвечает всем,
+    # заполнен — сообщения из чужих чатов молча игнорируются.
+    telegram_allowed_chat_ids: Annotated[frozenset[TelegramChatId], NoDecode] = frozenset()
+
+    @field_validator("telegram_allowed_chat_ids", mode="before")
+    @classmethod
+    def _parse_allowed_chat_ids(cls, value: object) -> object:
+        """Разобрать env-строку «123, 456».
+
+        ``NoDecode`` отключает JSON-парсинг сложных типов в pydantic-settings;
+        конвертацию элементов в int выполняет pydantic — невалидный id падает
+        с ошибкой валидации на старте.
+        """
+        if not isinstance(value, str):
+            return value
+        items = [item.strip() for item in value.split(",")]
+        return [item for item in items if item]
 
     ollama_timeout_seconds: float = 120.0
     telegram_timeout_seconds: float = 30.0

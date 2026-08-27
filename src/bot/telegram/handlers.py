@@ -10,6 +10,7 @@ from bot.application.service import ApplicationService
 from bot.domain.ids import TelegramChatId
 from bot.telegram.mapper import to_user_request
 from bot.telegram.progress import TelegramCommandProgress
+from bot.telegram.splitter import split_long_text
 
 _START_TEXT = (
     "Привет! Я подключён к локальной языковой модели через Ollama.\n"
@@ -35,20 +36,34 @@ class TelegramHandlers:
         self,
         service: ApplicationService,
         logger: structlog.stdlib.BoundLogger,
+        allowed_chat_ids: frozenset[TelegramChatId] = frozenset(),
     ) -> None:
         self._service = service
         self._logger = logger.bind(component="telegram_handlers")
+        # Пустой список — бот отвечает всем; заполненный — только перечисленным чатам.
+        self._allowed_chat_ids = allowed_chat_ids
 
     def register(self, router: Router) -> None:
         router.message.register(self.handle_start, CommandStart())
         router.message.register(self.handle_new, Command("new"))
         router.message.register(self.handle_text, F.text, ~F.text.startswith("/"))
 
+    def _is_allowed(self, message: Message) -> bool:
+        if not self._allowed_chat_ids:
+            return True
+        return TelegramChatId(message.chat.id) in self._allowed_chat_ids
+
     async def handle_start(self, message: Message) -> None:
+        if not self._is_allowed(message):
+            self._logger.info("chat_not_allowed", chat_id=message.chat.id)
+            return
         self._logger.info("start_command_received", chat_id=message.chat.id)
         await message.answer(_START_TEXT)
 
     async def handle_new(self, message: Message) -> None:
+        if not self._is_allowed(message):
+            self._logger.info("chat_not_allowed", chat_id=message.chat.id)
+            return
         try:
             await self._service.reset_session(TelegramChatId(message.chat.id))
         except ApplicationError:
@@ -63,6 +78,9 @@ class TelegramHandlers:
         await message.answer(_NEW_CHAT_TEXT)
 
     async def handle_text(self, message: Message) -> None:
+        if not self._is_allowed(message):
+            self._logger.info("chat_not_allowed", chat_id=message.chat.id)
+            return
         request = to_user_request(message)
         self._logger.info("message_received", request_id=request.request_id)
         progress = TelegramCommandProgress(source=message, logger=self._logger)
@@ -78,5 +96,6 @@ class TelegramHandlers:
             await message.answer(_ERROR_TEXT)
             return
         text = _STEP_LIMIT_TEXT if response.stopped_by_step_limit else response.text
-        await message.answer(text)
+        for part in split_long_text(text):
+            await message.answer(part)
         self._logger.info("reply_sent", request_id=response.request_id, status="success")
