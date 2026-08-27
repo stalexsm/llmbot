@@ -63,14 +63,20 @@ class TestParseSkill:
         assert "погод" in entry.description.lower()
 
     def test_name_and_description_come_from_frontmatter(self) -> None:
-        text = "---\nname: currency\ndescription: Курс валют через открытый API.\n---\n"
+        text = "---\nname: weather\ndescription: Курс валют через открытый API.\n---\n"
 
         entry = parse_skill(Path("skills/weather/SKILL.md"), text)
 
         assert entry is not None
-        # Имя берём из шапки: именно по нему модель ищет файл в каталоге скиллов.
-        assert entry.name == "currency"
+        # Имя из шапки обязано совпадать с каталогом: по нему модель ищет файл.
+        assert entry.name == "weather"
         assert entry.description == "Курс валют через открытый API."
+
+    def test_name_mismatching_folder_is_not_indexed(self) -> None:
+        """Имя из шапки расходится с каталогом — модель нашла бы не тот файл."""
+        text = "---\nname: currency\ndescription: Курсы валют.\n---\n"
+
+        assert parse_skill(Path("skills/weather/SKILL.md"), text) is None
 
     def test_fallback_to_plain_description_line(self) -> None:
         entry = parse_skill(
@@ -209,8 +215,9 @@ class TestRenderSkillsIndex:
     def test_footer_tells_where_skill_files_live(self) -> None:
         section = render_skills_index(_ENTRIES)
 
-        assert "skills/<имя>/SKILL.md" in section
-        assert "skills/weather/SKILL.md" in section
+        # Пример пути выводится из реальной записи, а не зашит литералом.
+        assert "каталоге скиллов под именем из индекса" in section
+        assert "cat skills/weather/SKILL.md" in section
 
     def test_index_tells_model_to_read_file_via_exec(self) -> None:
         section = render_skills_index(_ENTRIES)

@@ -32,13 +32,17 @@ class SkillEntry:
 def parse_skill(file: Path, text: str) -> SkillEntry | None:
     """Разобрать текст ``SKILL.md`` скилла.
 
-    Имя и описание берутся из frontmatter (имя важнее имени каталога);
-    без frontmatter — описание ищется строкой ``Description:``, а имя
-    берётся из каталога. Без описания файл в индекс не попадает (``None``).
+    Имя и описание берутся из frontmatter (без шапки — запасная строка
+    ``Description:``, а имя каталога). Имя из шапки обязано совпадать
+    с именем каталога: именно по имени модель ищет файл среди скиллов,
+    поэтому расходящееся имя в индекс не попадает (``None``).
     """
     meta = _parse_frontmatter(text)
-    name = meta.get("name") or file.parent.name
+    declared = meta.get("name")
+    name = declared or file.parent.name
     description = meta.get("description") or _plain_description(text)
+    if declared is not None and declared != file.parent.name:
+        return None
     if not description:
         return None
     return SkillEntry(name=name, description=description, file=file)
@@ -73,8 +77,9 @@ def render_skills_index(entries: tuple[SkillEntry, ...]) -> str:
         "Есть готовые скиллы — файлы с инструкциями для типовых задач:\n"
         f"{listed}\n"
         "Если задача подходит под один из скиллов, сначала прочитай его файл "
-        "через exec командой cat и делай всё строго по нему. Файл скилла лежит "
-        f"в каталоге скиллов: skills/<имя>/SKILL.md (например: cat {example})."
+        "через exec командой cat и делай всё строго по нему. Файл каждого скилла "
+        "лежит в каталоге скиллов под именем из индекса "
+        f"(например: cat {example})."
     )
 
 
