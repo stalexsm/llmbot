@@ -14,6 +14,7 @@ from bot.domain.messages import InferenceMessage, MessageRole
 from bot.domain.tools import ToolCall
 from bot.inference.provider import InferenceProvider
 from tests.fakes import (
+    RecordingProgress,
     ScriptedInferenceProvider,
     exec_call_response,
     final_response,
@@ -21,17 +22,6 @@ from tests.fakes import (
 )
 
 USER = InferenceMessage(role=MessageRole.USER, content="покажи файлы")
-
-
-class RecordingProgress:
-    def __init__(self) -> None:
-        self.events: list[tuple[str, str, bool | None]] = []
-
-    async def command_started(self, command: str) -> None:
-        self.events.append(("started", command, None))
-
-    async def command_finished(self, command: str, succeeded: bool) -> None:
-        self.events.append(("finished", command, succeeded))
 
 
 def make_loop(

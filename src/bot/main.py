@@ -18,7 +18,8 @@ from aiogram.client.session.aiohttp import AiohttpSession
 
 from bot.agent.exec import ExecTool
 from bot.agent.loop import AgentLoop
-from bot.agent.prompts import SYSTEM_PROMPT
+from bot.agent.prompts import build_system_prompt
+from bot.agent.skills import load_skills, render_skills_index
 from bot.application.service import ApplicationService
 from bot.config.settings import Settings
 from bot.domain.ids import ModelId
@@ -68,10 +69,24 @@ async def run() -> None:
             max_output_chars=settings.agent_exec_max_output_chars,
             logger=logger,
         )
+        # Индекс скиллов собирается один раз на старте: новый файл попадёт
+        # в индекс при следующем запуске, без правки кода.
+        skills = load_skills(settings.agent_skills_directory)
+        if not settings.agent_skills_directory.is_dir():
+            logger.warning(
+                "skills_directory_missing",
+                directory=str(settings.agent_skills_directory),
+            )
+        logger.info(
+            "skills_index_built",
+            directory=str(settings.agent_skills_directory),
+            count=len(skills),
+            names=[entry.name for entry in skills],
+        )
         agent_loop = AgentLoop(
             inference=inference,
             model=ModelId(settings.ollama_model),
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=build_system_prompt(render_skills_index(skills)),
             tools=(exec_tool,),
             step_limit=settings.agent_max_steps,
             logger=logger,

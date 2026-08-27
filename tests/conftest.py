@@ -1,12 +1,19 @@
 """Shared pytest fixtures."""
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 import structlog
 import structlog.stdlib
 from aiogram import Bot
 from structlog.testing import CapturingLogger
+
+
+@pytest.fixture
+def repo_root() -> Path:
+    """Корень репозитория: фикстура для чтения настоящих файлов проекта."""
+    return Path(__file__).resolve().parents[1]
 
 
 @pytest.fixture

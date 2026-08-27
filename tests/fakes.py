@@ -10,6 +10,19 @@ from bot.domain.tools import ToolCall
 from bot.inference.models import InferenceRequest, InferenceResponse
 
 
+class RecordingProgress:
+    """Прогресс, записывающий события шагов агента для проверок."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, str, bool | None]] = []
+
+    async def command_started(self, command: str) -> None:
+        self.events.append(("started", command, None))
+
+    async def command_finished(self, command: str, succeeded: bool) -> None:
+        self.events.append(("finished", command, succeeded))
+
+
 class MockInferenceProvider:
     """Deterministic in-memory inference provider for tests.
 

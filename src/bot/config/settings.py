@@ -4,6 +4,7 @@ Pydantic is used only at this external configuration boundary; everything
 inside the application operates on plain typed dataclasses.
 """
 
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field, SecretStr
@@ -36,6 +37,9 @@ class Settings(BaseSettings):
 
     # Окно истории чат-сессии: сколько последних сообщений уходит в запрос.
     agent_history_max_messages: int = Field(default=20, ge=1)
+
+    # Каталог скиллов: markdown-файлы с инструкциями; индекс собирается на старте.
+    agent_skills_directory: Path = Path("skills")
 
     log_level: str = "INFO"
     log_format: Literal["console", "json"] = "console"
