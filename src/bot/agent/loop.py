@@ -29,6 +29,40 @@ _NULL_PROGRESS = NullProgress()
 _EMPTY_STEP_RETRIES = 2
 
 
+def _strip_tool_echo(content: str, tool_results: tuple[str, ...]) -> str:
+    """Убрать из финального ответа дословную копию результатов инструментов.
+
+    Крошечные модели иногда переписывают сырой результат инструмента
+    (exit_code, stdout, …) прямо в финальный ответ, нарушая правило промпта.
+    Эхо распознаётся по строкам самих результатов: блок начинается со строки,
+    с которой начинается какой-то результат, и продолжается, пока строки
+    дословно встречаются в результатах (пустые строки внутри блока — тоже его
+    часть). Собственный текст модели после блока сохраняется. Если модель
+    ничего не скопировала, контент возвращается без изменений.
+    """
+    result_lines = {
+        line.strip() for result in tool_results for line in result.splitlines() if line.strip()
+    }
+    first_lines = {
+        result.strip().splitlines()[0].strip() for result in tool_results if result.strip()
+    }
+    kept: list[str] = []
+    echoing = False
+    dropped = False
+    for line in content.splitlines():
+        stripped = line.strip()
+        if echoing and (not stripped or stripped in result_lines):
+            continue
+        echoing = stripped in first_lines
+        if echoing:
+            dropped = True
+            continue
+        kept.append(line)
+    if not dropped:
+        return content
+    return "\n".join(kept).strip()
+
+
 @dataclass(frozen=True)
 class AgentRun:
     """Результат одного агентного цикла.
@@ -105,7 +139,22 @@ class AgentLoop:
                 tool_calls=response.tool_calls,
             )
             if not response.tool_calls:
-                if not response.content.strip():
+                # Дословное эхо результатов инструментов (свежих и из истории)
+                # вырезается из финального ответа: пользователю и в сессию
+                # уходит только собственный текст модели.
+                answer = _strip_tool_echo(
+                    response.content,
+                    tuple(
+                        message.content for message in messages if message.role is MessageRole.TOOL
+                    ),
+                )
+                if answer != response.content:
+                    self._logger.warning(
+                        "agent_final_answer_tool_echo_stripped",
+                        request_id=request_id,
+                        step=step,
+                    )
+                if not answer.strip():
                     if empty_retries < _EMPTY_STEP_RETRIES:
                         empty_retries += 1
                         self._logger.warning(
@@ -123,12 +172,12 @@ class AgentLoop:
                     raise EmptyInferenceResponseError(
                         "Inference provider returned an empty response"
                     )
-                exchange.append(assistant)
+                exchange.append(InferenceMessage(role=MessageRole.ASSISTANT, content=answer))
                 self._log_run(request_id, started_at, steps=step, stopped=False)
                 return AgentRun(
                     steps_used=step,
                     exchange=tuple(exchange),
-                    final_answer=response.content,
+                    final_answer=answer,
                     stopped_by_limit=False,
                     failed_tool_results=failed_tool_results,
                 )

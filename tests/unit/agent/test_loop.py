@@ -181,6 +181,61 @@ async def test_empty_final_answer_raises_after_retries_exhausted(
     assert len(provider.requests) == 3
 
 
+async def test_tool_echo_is_stripped_from_final_answer(
+    logger: structlog.stdlib.BoundLogger, tmp_path: Path
+) -> None:
+    # Модель переписала сырой результат инструмента перед собственной сводкой:
+    # пользователю и в сессию должна уйти только сводка.
+    provider = ScriptedInferenceProvider(
+        [
+            exec_call_response("echo погода"),
+            final_response("exit_code: 0\nstdout:\nпогода\n\nСводка: погода получена"),
+        ]
+    )
+    loop = make_loop(logger, provider, tmp_path)
+
+    run = await loop.run(RequestId(str(uuid4())), (), USER)
+
+    assert run.final_answer == "Сводка: погода получена"
+    # В сессию тоже пишется очищенный ответ, иначе история учит модель эху.
+    assert run.exchange[-1] == InferenceMessage(
+        role=MessageRole.ASSISTANT, content="Сводка: погода получена"
+    )
+
+
+async def test_pure_tool_echo_is_retried_as_empty_answer(
+    logger: structlog.stdlib.BoundLogger, tmp_path: Path
+) -> None:
+    # Ответ целиком из эха результата — после очистки пустота, шаг повторяется.
+    provider = ScriptedInferenceProvider(
+        [
+            exec_call_response("echo погода"),
+            final_response("exit_code: 0\nstdout:\nпогода\n\nstderr:\n"),
+            final_response("Сегодня погода"),
+        ]
+    )
+    loop = make_loop(logger, provider, tmp_path)
+
+    run = await loop.run(RequestId(str(uuid4())), (), USER)
+
+    assert run.final_answer == "Сегодня погода"
+    assert len(provider.requests) == 3
+
+
+async def test_answer_built_from_tool_data_is_untouched(
+    logger: structlog.stdlib.BoundLogger, tmp_path: Path
+) -> None:
+    # Ответ использует данные из вывода, но не копирует его сырьём — не трогаем.
+    provider = ScriptedInferenceProvider(
+        [exec_call_response("echo 18"), final_response("Сейчас 18 градусов, ясно")]
+    )
+    loop = make_loop(logger, provider, tmp_path)
+
+    run = await loop.run(RequestId(str(uuid4())), (), USER)
+
+    assert run.final_answer == "Сейчас 18 градусов, ясно"
+
+
 async def test_unknown_tool_returns_error_to_model(
     logger: structlog.stdlib.BoundLogger, tmp_path: Path
 ) -> None:
