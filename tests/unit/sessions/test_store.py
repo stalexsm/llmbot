@@ -118,10 +118,11 @@ def test_append_does_not_write_system_messages(
     assert '"user"' in raw
 
 
-def test_tool_call_and_result_roundtrip_as_linked_pair(
+def test_tool_exchange_is_not_persisted(
     tmp_path: Path, logger: structlog.stdlib.BoundLogger
 ) -> None:
-    # Пара «вызов инструмента → результат»: assistant с tool_calls + tool-сообщение.
+    # В сессию пишется только диалог: результат инструмента (особенно ошибка)
+    # в истории сбивает модель на следующих ответах.
     store = make_store(tmp_path, logger)
     call = ToolCall(name=ToolId("exec"), arguments='{"command": "ls -la"}')
 
@@ -135,7 +136,7 @@ def test_tool_call_and_result_roundtrip_as_linked_pair(
         ),
         InferenceMessage(
             role=MessageRole.TOOL,
-            content="exit_code: 0\nstdout:\nfile.txt",
+            content="exit_code: 1\nstderr:\nls: boom",
             tool_name=ToolId("exec"),
         ),
         InferenceMessage(role=MessageRole.ASSISTANT, content="Вот файлы: file.txt"),
@@ -143,37 +144,35 @@ def test_tool_call_and_result_roundtrip_as_linked_pair(
 
     assert store.load(CHAT) == (
         InferenceMessage(role=MessageRole.USER, content="покажи файлы"),
-        InferenceMessage(role=MessageRole.ASSISTANT, content="", tool_calls=(call,)),
-        InferenceMessage(
-            role=MessageRole.TOOL,
-            content="exit_code: 0\nstdout:\nfile.txt",
-            tool_name=ToolId("exec"),
-        ),
         InferenceMessage(role=MessageRole.ASSISTANT, content="Вот файлы: file.txt"),
     )
+    # Сырой файл: ни tool-сообщений, ни tool_calls не записано вовсе.
+    raw = (tmp_path / "100.jsonl").read_text(encoding="utf-8")
+    assert "tool" not in raw
+    assert "boom" not in raw
 
 
-def test_load_skips_lines_with_malformed_tool_calls(
+def test_load_skips_tool_lines_of_legacy_sessions(
     tmp_path: Path, logger: structlog.stdlib.BoundLogger
 ) -> None:
+    # Файлы, записанные до отказа от хранения tool-обмена, читаются
+    # как чистый диалог: tool-строки пропускаются молча.
     store = make_store(tmp_path, logger)
     session_file = tmp_path / "100.jsonl"
     session_file.write_text(
-        # arguments не строка — строка битая, пропускается целиком.
+        '{"role": "user", "content": "покажи файлы"}\n'
+        # Строка вызова: assistant с tool_calls и пустым content.
         '{"role": "assistant", "content": "", "tool_calls": '
-        '[{"name": "exec", "arguments": {"command": "ls"}}]}\n'
-        # tool_calls не список — тоже битая строка.
-        '{"role": "assistant", "content": "", "tool_calls": "oops"}\n'
-        # tool_name неизвестного инструмента сохраняется как есть: валидация имён — дело хранилища.
-        '{"role": "tool", "content": "ok", "tool_name": "weather"}\n'
-        # Битая строка не ломает следующие валидные.
-        '{"role": "user", "content": "ок"}\n',
+        '[{"name": "exec", "arguments": "{\\"command\\": \\"ls\\"}"}]}\n'
+        # Строка результата инструмента.
+        '{"role": "tool", "content": "exit_code: 1", "tool_name": "exec"}\n'
+        '{"role": "assistant", "content": "Вот файлы: file.txt"}\n',
         encoding="utf-8",
     )
 
     assert store.load(CHAT) == (
-        InferenceMessage(role=MessageRole.TOOL, content="ok", tool_name=ToolId("weather")),
-        InferenceMessage(role=MessageRole.USER, content="ок"),
+        InferenceMessage(role=MessageRole.USER, content="покажи файлы"),
+        InferenceMessage(role=MessageRole.ASSISTANT, content="Вот файлы: file.txt"),
     )
 
 

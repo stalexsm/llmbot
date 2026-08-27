@@ -1,8 +1,11 @@
 """Файловое хранилище чат-сессий (JSONL, append-only).
 
 Одна чат-сессия — один файл ``<chat_id>.jsonl`` в каталоге данных; строка
-файла — одно сообщение. Системный промпт сессии не принадлежит хранилищу:
-он собирается заново при каждом запросе и на диске не живёт.
+файла — одно сообщение. Хранится только диалог «пользователь ↔ финальный
+ответ». Системный промпт сессии не принадлежит хранилищу: он собирается
+заново при каждом запросе. Вызовы инструментов и их результаты живут только
+внутри одного агентного запуска и на диск не пишутся: результат инструмента
+(особенно ошибка) в истории сбивает модель на следующих ответах.
 """
 
 import json
@@ -11,9 +14,8 @@ from pathlib import Path
 import structlog
 
 from bot.application.errors import SessionStorageError
-from bot.domain.ids import TelegramChatId, ToolId
+from bot.domain.ids import TelegramChatId
 from bot.domain.messages import InferenceMessage, MessageRole
-from bot.domain.tools import ToolCall
 
 
 class ChatSessionStore:
@@ -24,7 +26,7 @@ class ChatSessionStore:
         self._logger = logger.bind(component="chat_session_store")
 
     def load(self, chat_id: TelegramChatId) -> tuple[InferenceMessage, ...]:
-        """Прочитать историю сессии, пропуская битые строки и системные сообщения."""
+        """Прочитать историю сессии: только реплики диалога, битые строки пропускаются."""
         session_file = self._file_for(chat_id)
         if not session_file.exists():
             return ()
@@ -45,19 +47,24 @@ class ChatSessionStore:
                     line=line_number,
                 )
                 continue
-            if message.role is MessageRole.SYSTEM:
-                # Системный промпт не хранится: собирается заново при запросе.
+            if not self._is_dialog_message(message):
+                # Системные и инструментальные строки (в том числе из файлов,
+                # записанных до отказа от хранения tool-обмена) — не диалог.
                 continue
             messages.append(message)
         return tuple(messages)
 
     def append(self, chat_id: TelegramChatId, *messages: InferenceMessage) -> None:
         """Дописать сообщения в конец сессии одной записью (атомарно на уровне вызова)."""
-        persisted = [message for message in messages if message.role is not MessageRole.SYSTEM]
+        persisted = [message for message in messages if self._is_dialog_message(message)]
         if not persisted:
             return
         payload = "".join(
-            json.dumps(self._record_for(message), ensure_ascii=False) + "\n"
+            json.dumps(
+                {"role": message.role.value, "content": message.content},
+                ensure_ascii=False,
+            )
+            + "\n"
             for message in persisted
         )
         try:
@@ -80,15 +87,16 @@ class ChatSessionStore:
         return self._directory / f"{chat_id}.jsonl"
 
     @staticmethod
-    def _record_for(message: InferenceMessage) -> dict[str, object]:
-        record: dict[str, object] = {"role": message.role.value, "content": message.content}
-        if message.tool_calls:
-            record["tool_calls"] = [
-                {"name": call.name, "arguments": call.arguments} for call in message.tool_calls
-            ]
-        if message.tool_name is not None:
-            record["tool_name"] = message.tool_name
-        return record
+    def _is_dialog_message(message: InferenceMessage) -> bool:
+        """Реплика ли это диалога «пользователь ↔ финальный ответ».
+
+        Не диалог: системный промпт (собирается заново при запросе),
+        результаты инструментов, assistant-сообщения с вызовами инструментов
+        и пустые сообщения (в старых файлах так выглядят строки tool-вызовов).
+        """
+        if message.role not in (MessageRole.USER, MessageRole.ASSISTANT):
+            return False
+        return bool(message.content) and not message.tool_calls
 
     @staticmethod
     def _parse_line(line: str) -> InferenceMessage | None:
@@ -96,37 +104,8 @@ class ChatSessionStore:
             record = json.loads(line)
             role = MessageRole(record["role"])
             content = record["content"]
-            if not isinstance(content, str):
-                return None
-            tool_calls = ChatSessionStore._parse_tool_calls(record.get("tool_calls"))
-            if tool_calls is None:
-                return None
-            raw_tool_name = record.get("tool_name")
-            if raw_tool_name is not None and not isinstance(raw_tool_name, str):
-                return None
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             return None
-        return InferenceMessage(
-            role=role,
-            content=content,
-            tool_calls=tool_calls,
-            tool_name=ToolId(raw_tool_name) if raw_tool_name is not None else None,
-        )
-
-    @staticmethod
-    def _parse_tool_calls(raw: object) -> tuple[ToolCall, ...] | None:
-        """Разобрать вызовы инструментов строки; ``None`` — строка битая."""
-        if raw is None:
-            return ()
-        if not isinstance(raw, list):
+        if not isinstance(content, str):
             return None
-        calls: list[ToolCall] = []
-        for item in raw:
-            if not isinstance(item, dict):
-                return None
-            name = item.get("name")
-            arguments = item.get("arguments")
-            if not isinstance(name, str) or not isinstance(arguments, str):
-                return None
-            calls.append(ToolCall(name=ToolId(name), arguments=arguments))
-        return tuple(calls)
+        return InferenceMessage(role=role, content=content)

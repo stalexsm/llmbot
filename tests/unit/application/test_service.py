@@ -24,10 +24,8 @@ from bot.domain.ids import (
     TelegramChatId,
     TelegramMessageId,
     TelegramUserId,
-    ToolId,
 )
 from bot.domain.messages import InferenceMessage, MessageRole
-from bot.domain.tools import ToolCall
 from bot.inference.models import InferenceRequest, InferenceResponse
 from bot.inference.provider import InferenceProvider
 from bot.sessions.store import ChatSessionStore
@@ -214,9 +212,10 @@ async def test_infrastructure_errors_propagate_as_application_errors(
         await service.process_message(make_request("Привет"))
 
 
-async def test_tool_pairs_persisted_to_session_as_linked_chain(
+async def test_tool_exchange_is_not_persisted_to_session(
     logger: structlog.stdlib.BoundLogger, tmp_path: Path
 ) -> None:
+    # В сессию попадает только диалог: tool-обмен живёт внутри одного запуска.
     provider = ScriptedInferenceProvider(
         [exec_call_response("echo привет"), final_response("Готово: привет")]
     )
@@ -227,18 +226,11 @@ async def test_tool_pairs_persisted_to_session_as_linked_chain(
     assert response.text == "Готово: привет"
     sessions = ChatSessionStore(directory=tmp_path, logger=logger)
     history = sessions.load(CHAT)
-    roles = [message.role for message in history]
-    assert roles == [
-        MessageRole.USER,
-        MessageRole.ASSISTANT,
-        MessageRole.TOOL,
-        MessageRole.ASSISTANT,
+    assert [(message.role, message.content) for message in history] == [
+        (MessageRole.USER, "покажи файлы"),
+        (MessageRole.ASSISTANT, "Готово: привет"),
     ]
-    assert history[1].tool_calls == (
-        ToolCall(name=ToolId("execute_command"), arguments='{"command": "echo привет"}'),
-    )
-    assert history[2].tool_name == ToolId("execute_command")
-    assert "привет" in history[2].content
+    assert all(not message.tool_calls for message in history)
 
 
 async def test_giveup_run_is_not_persisted_and_retried(
@@ -261,13 +253,8 @@ async def test_giveup_run_is_not_persisted_and_retried(
     assert response.text == "Вот данные: 42"
     sessions = ChatSessionStore(directory=tmp_path, logger=logger)
     history = sessions.load(CHAT)
-    assert [m.role for m in history] == [
-        MessageRole.USER,
-        MessageRole.ASSISTANT,
-        MessageRole.TOOL,
-        MessageRole.ASSISTANT,
-    ]
-    assert history[3].content == "Вот данные: 42"
+    assert [m.role for m in history] == [MessageRole.USER, MessageRole.ASSISTANT]
+    assert history[1].content == "Вот данные: 42"
     # Всего четыре запроса модели: два на забракованный запуск, два на принятый.
     assert len(provider.requests) == 4
 
@@ -351,7 +338,7 @@ async def test_giveup_after_only_reading_skill_is_retried(
     assert [m.content for m in history][-1] == "В Турции сейчас ☀️ +28°C, ветер 10 км/ч."
 
 
-async def test_step_limit_stop_reports_flag_and_persists_exchange(
+async def test_step_limit_stop_reports_flag_and_persists_user_message(
     logger: structlog.stdlib.BoundLogger, tmp_path: Path
 ) -> None:
     provider = ScriptedInferenceProvider(
@@ -364,16 +351,10 @@ async def test_step_limit_stop_reports_flag_and_persists_exchange(
     assert response.stopped_by_step_limit is True
     assert response.text == ""
     assert isinstance(response, UserMessageResponse)
-    # Обмен с выполненными командами остаётся в сессии.
+    # Финального ответа нет, tool-обмен не хранится — в сессии только вопрос.
     sessions = ChatSessionStore(directory=tmp_path, logger=logger)
     history = sessions.load(CHAT)
-    assert [message.role for message in history] == [
-        MessageRole.USER,
-        MessageRole.ASSISTANT,
-        MessageRole.TOOL,
-        MessageRole.ASSISTANT,
-        MessageRole.TOOL,
-    ]
+    assert [message.role for message in history] == [MessageRole.USER]
 
 
 async def test_progress_is_passed_through_to_tools(

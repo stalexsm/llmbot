@@ -26,30 +26,6 @@ def test_history_longer_than_limit_keeps_last_messages() -> None:
     assert window[-1].content == "24"
 
 
-def test_cut_does_not_leave_orphaned_tool_result() -> None:
-    # Пара «вызов инструмента → результат»: результат без предшествующего
-    # вызова невалиден для провайдера, срез смещается дальше.
-    history = (
-        msg(MessageRole.USER, "запрос"),
-        msg(MessageRole.ASSISTANT, "вызов инструмента"),
-        msg(MessageRole.TOOL, "результат инструмента"),
-        msg(MessageRole.ASSISTANT, "финальный ответ"),
-    )
-
-    window = trim_to_window(history, 2)
-
-    assert window == (msg(MessageRole.ASSISTANT, "финальный ответ"),)
-
-
-def test_window_of_only_tool_results_is_empty() -> None:
-    history = (
-        msg(MessageRole.TOOL, "результат 1"),
-        msg(MessageRole.TOOL, "результат 2"),
-    )
-
-    assert trim_to_window(history, 5) == ()
-
-
 def test_limit_must_be_positive() -> None:
     history = (msg(MessageRole.USER, "a"),)
 

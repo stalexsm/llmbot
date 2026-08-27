@@ -89,8 +89,9 @@ class ApplicationService:
                 attempt=attempt,
             )
             run = await self._agent.run(request.request_id, history, user_message, progress)
-        # Обмен сохраняется целиком: пользователь, пары «вызов → результат»,
-        # финальный ответ. Незавершённые попытки (исключение) сессию не меняют.
+        # В сессию попадает только диалог из обмена — сообщение пользователя
+        # и финальный ответ; tool-обмен хранилище отфильтровывает само.
+        # Незавершённые попытки (исключение) сессию не меняют.
         if not self._is_broken_run(run):
             self._sessions.append(request.chat_id, *run.exchange)
         if run.stopped_by_limit:
