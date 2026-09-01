@@ -17,7 +17,7 @@ from bot.application.errors import (
 from bot.domain.ids import ModelId, RequestId, ToolId
 from bot.domain.messages import InferenceMessage, MessageRole
 from bot.domain.tools import ToolCall, ToolParameter, ToolSpec
-from bot.inference.models import InferenceRequest
+from bot.inference.models import InferenceRequest, InferenceUsage
 from bot.inference.ollama import OllamaInferenceProvider
 
 TransportHandler = Callable[[httpx.Request], Coroutine[None, None, httpx.Response]]
@@ -68,6 +68,75 @@ async def test_successful_inference(logger: structlog.stdlib.BoundLogger) -> Non
         response = await provider.generate(make_request())
 
     assert response.content == "Ответ модели"
+
+
+async def test_usage_is_parsed_into_domain_model(
+    logger: structlog.stdlib.BoundLogger,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "model": "qwen3:1.7b",
+                "message": {"role": "assistant", "content": "Ответ модели"},
+                "done": True,
+                "total_duration": 8119152709,
+                "load_duration": 6585920841,
+                "prompt_eval_count": 61,
+                "prompt_eval_duration": 411808000,
+                "eval_count": 468,
+                "eval_duration": 989833000,
+            },
+        )
+
+    client, provider = make_provider(logger, handler)
+
+    async with client:
+        response = await provider.generate(make_request())
+
+    usage = response.usage
+    assert usage is not None
+    assert usage.prompt_tokens == 61
+    assert usage.completion_tokens == 468
+    assert usage.total_duration_ns == 8119152709
+    assert usage.load_duration_ns == 6585920841
+    assert usage.prompt_eval_duration_ns == 411808000
+    assert usage.eval_duration_ns == 989833000
+
+
+async def test_response_without_usage_has_no_usage(
+    logger: structlog.stdlib.BoundLogger,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"message": {"role": "assistant", "content": "Ответ"}, "done": True},
+        )
+
+    client, provider = make_provider(logger, handler)
+
+    async with client:
+        response = await provider.generate(make_request())
+
+    assert response.usage is None
+
+
+async def test_partial_usage_keeps_missing_fields_empty(
+    logger: structlog.stdlib.BoundLogger,
+) -> None:
+    # Часть полей (например, только счётчик выходных токенов) — валидно.
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"message": {"role": "assistant", "content": "Ответ"}, "eval_count": 42},
+        )
+
+    client, provider = make_provider(logger, handler)
+
+    async with client:
+        response = await provider.generate(make_request())
+
+    assert response.usage == InferenceUsage(completion_tokens=42)
 
 
 async def test_think_is_false_by_default(
