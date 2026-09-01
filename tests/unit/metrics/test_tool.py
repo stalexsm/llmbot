@@ -61,6 +61,15 @@ async def run_metered(
     return line, returned
 
 
+class ExplodingTool(StubTool):
+    """Фальшивка Tool: бросает исключение вместо результата (сбой spawn)."""
+
+    async def execute(
+        self, request_id: RequestId, call: ToolCall, progress: AgentProgress
+    ) -> ToolResult:
+        raise RuntimeError("spawn failed")
+
+
 async def test_tool_call_recorded_with_class_sizes_and_status(tmp_path: Path) -> None:
     arguments = json.dumps({"command": "git status"}, ensure_ascii=False)
     content = "exit_code: 0\nstdout:\nmain\n"
@@ -128,3 +137,28 @@ def test_spec_is_delegated(tmp_path: Path) -> None:
     collector, _ = make_collector(tmp_path)
     inner = StubTool(ToolResult(content="", succeeded=True))
     assert MeteredTool(inner=inner, collector=collector).spec is inner.spec
+
+
+async def test_failed_execution_still_records_tool_call(tmp_path: Path) -> None:
+    """Исключение исполнителя — тоже вызов: событие не теряется, сбой пробрасывается."""
+    collector, directory = make_collector(tmp_path)
+    metered = MeteredTool(
+        inner=ExplodingTool(ToolResult(content="", succeeded=True)), collector=collector
+    )
+
+    with pytest.raises(RuntimeError, match="spawn failed"):
+        await metered.execute(
+            REQUEST_ID,
+            ToolCall(name=ToolId("execute_command"), arguments='{"command": "ls"}'),
+            PROGRESS,
+        )
+
+    (line,) = [
+        json.loads(line)
+        for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert line["kind"] == "tool_call"
+    assert line["tool_name"] == "exec:ls"
+    assert line["succeeded"] is False
+    assert line["output_size"] == 0
+    assert line["output_tokens"] == 0

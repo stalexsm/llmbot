@@ -31,16 +31,41 @@ class MeteredTool:
         self, request_id: RequestId, call: ToolCall, progress: AgentProgress
     ) -> ToolResult:
         started_at = time.monotonic()
-        result = await self._inner.execute(request_id, call, progress)
+        try:
+            result = await self._inner.execute(request_id, call, progress)
+        except Exception:
+            # Неудачный вызов — тоже вызов: пишем событие со сбоем (вывода нет)
+            # и пробрасываем исключение дальше, как его отдал исполнитель, —
+            # симметрично MeteredInferenceProvider («включая неудачный»).
+            self._record(request_id, call, started_at, output_size=0, succeeded=False)
+            raise
+        self._record(
+            request_id,
+            call,
+            started_at,
+            output_size=len(result.content),
+            succeeded=result.succeeded,
+        )
+        return result
+
+    def _record(
+        self,
+        request_id: RequestId,
+        call: ToolCall,
+        started_at: float,
+        *,
+        output_size: int,
+        succeeded: bool,
+    ) -> None:
         # Метка класса: exec:<класс> — git, python, rg, cat, ls или other.
         # Размер ввода — сырые аргументы вызова (то, что породила модель),
-        # размера вывода — текст результата; сами тексты не записываются.
+        # размер вывода — модель-видимый текст результата (после обрезки exec);
+        # сами тексты не записываются.
         self._collector.record_tool_call(
             request_id=request_id,
             tool_name=f"exec:{classify_call_arguments(call.arguments).value}",
             input_size=len(call.arguments),
-            output_size=len(result.content),
+            output_size=output_size,
             duration_ms=int((time.monotonic() - started_at) * 1000),
-            succeeded=result.succeeded,
+            succeeded=succeeded,
         )
-        return result

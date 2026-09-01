@@ -1,10 +1,10 @@
 """The ``ProcessUserMessage`` use case: агентная обработка сообщения в чат-сессии."""
 
 import asyncio
-import json
 
 import structlog
 
+from bot.agent.command_class import command_from_arguments
 from bot.agent.loop import AgentLoop, AgentRun
 from bot.agent.progress import AgentProgress
 from bot.application.models import UserMessageRequest, UserMessageResponse
@@ -156,12 +156,8 @@ class ApplicationService:
         if not calls:
             return False
         for call in calls:
-            try:
-                arguments = json.loads(call.arguments)
-            except json.JSONDecodeError:
-                return False
-            command = arguments.get("command") if isinstance(arguments, dict) else None
-            if not isinstance(command, str) or not command.startswith("cat skills/"):
+            command = command_from_arguments(call.arguments)
+            if command is None or not command.startswith("cat skills/"):
                 return False
         return True
 
