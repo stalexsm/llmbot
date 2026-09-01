@@ -6,6 +6,7 @@ from uuid import uuid4
 from aiogram.types import Message
 
 from bot.domain.ids import ModelId, RequestId, ToolId
+from bot.domain.messages import InferenceMessage
 from bot.domain.tools import ToolCall
 from bot.inference.models import InferenceRequest, InferenceResponse, InferenceUsage
 
@@ -113,6 +114,8 @@ class SpyMetricsCollector:
         model: ModelId,
         latency_ms: int,
         usage: InferenceUsage | None,
+        messages: tuple[InferenceMessage, ...],
+        reached_model: bool,
     ) -> None:
         pass
 

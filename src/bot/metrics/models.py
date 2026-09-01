@@ -50,6 +50,9 @@ class LlmCallRecord:
     step: int
     prompt_tokens: int | None
     completion_tokens: int | None
+    # Прокси-метрика повторно передаваемого контекста (кэш-данных от Ollama
+    # нет): сколько токенов промпта модель уже видела в этом запуске.
+    repeated_context_tokens: int | None
     latency_ms: int
     estimated_cost: float | None
 
@@ -70,6 +73,7 @@ class LlmCallRecord:
             "step": self.step,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
+            "repeated_context_tokens": self.repeated_context_tokens,
             "latency_ms": self.latency_ms,
             "estimated_cost": self.estimated_cost,
         }
@@ -124,6 +128,10 @@ class RunRecord:
     steps: int
     prompt_tokens: int | None
     completion_tokens: int | None
+    # Суммарный повторно переданный контекст запуска и его доля в промпт-токенах
+    # (proxy cache hit rate); None — если провайдер не дал точных счётчиков.
+    repeated_context_tokens: int | None
+    repeated_context_ratio: float | None
     duration_ms: int | None
     success: bool
     estimated_cost: float | None
@@ -145,6 +153,8 @@ class RunRecord:
             "steps": self.steps,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
+            "repeated_context_tokens": self.repeated_context_tokens,
+            "repeated_context_ratio": self.repeated_context_ratio,
             "duration_ms": self.duration_ms,
             "success": self.success,
             "estimated_cost": self.estimated_cost,

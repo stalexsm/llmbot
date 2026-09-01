@@ -13,9 +13,11 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from bot.domain.ids import ModelId, RequestId
+from bot.domain.messages import InferenceMessage
 from bot.inference.models import InferenceUsage
 from bot.metrics.models import LlmCallRecord, RunRecord, ToolCallRecord, estimate_output_tokens
 from bot.metrics.recorder import MetricsRecorder
+from bot.metrics.repeat import prompt_chars, repeated_prefix_chars
 
 
 def _utc_now_iso() -> str:
@@ -28,6 +30,10 @@ class _RunAccumulator:
 
     started_at: float = field(default_factory=time.monotonic)
     records: list[LlmCallRecord] = field(default_factory=list)
+    # Сообщения последнего дошедшего до модели запроса запуска: с ними
+    # считается общий префикс следующего вызова. Содержимое не записывается
+    # и наружу не выходит.
+    last_messages: tuple[InferenceMessage, ...] = ()
 
 
 class RunMetrics(Protocol):
@@ -57,11 +63,25 @@ class RunMetricsCollector:
         model: ModelId,
         latency_ms: int,
         usage: InferenceUsage | None,
+        messages: tuple[InferenceMessage, ...],
+        reached_model: bool,
     ) -> None:
-        """Записать один вызов модели и накинуть его в копилку запуска."""
+        """Записать один вызов модели и накинуть его в копилку запуска.
+
+        ``messages`` нужны лишь для прокси-метрики повторно передаваемого
+        контекста: общий префикс с предыдущим запросом того же запуска
+        считается по спискам сообщений, в событие попадает только число
+        откалиброванных токенов — само содержимое не записывается никогда.
+        Вызов с ``reached_model=False`` (промпт не дошёл до модели — сбой
+        транспорта) «уже виденным» не считается: его сообщения не станут
+        предыдущим запросом для следующего вызова.
+        """
         prompt_tokens = usage.prompt_tokens if usage is not None else None
         completion_tokens = usage.completion_tokens if usage is not None else None
         run = self._runs.setdefault(request_id, _RunAccumulator())
+        repeated_chars = repeated_prefix_chars(run.last_messages, messages)
+        if reached_model:
+            run.last_messages = messages
         record = LlmCallRecord(
             timestamp=_utc_now_iso(),
             request_id=request_id,
@@ -69,6 +89,9 @@ class RunMetricsCollector:
             step=len(run.records) + 1,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            repeated_context_tokens=self._calibrate_repeated_tokens(
+                repeated_chars, prompt_chars(messages), prompt_tokens
+            ),
             latency_ms=latency_ms,
             estimated_cost=self._estimate_cost(prompt_tokens, completion_tokens),
         )
@@ -103,14 +126,18 @@ class RunMetricsCollector:
         """Закрыть запуск: агрегированная запись run поверх его llm_call."""
         run = self._runs.pop(request_id, None)
         records = run.records if run is not None else []
+        prompt_tokens = self._sum_int(record.prompt_tokens for record in records)
+        repeated_tokens = self._sum_int(record.repeated_context_tokens for record in records)
         self._recorder.record(
             RunRecord(
                 timestamp=_utc_now_iso(),
                 request_id=request_id,
                 model=records[-1].model if records else None,
                 steps=len(records),
-                prompt_tokens=self._sum_int(record.prompt_tokens for record in records),
+                prompt_tokens=prompt_tokens,
                 completion_tokens=self._sum_int(record.completion_tokens for record in records),
+                repeated_context_tokens=repeated_tokens,
+                repeated_context_ratio=self._repeated_ratio(prompt_tokens, repeated_tokens),
                 duration_ms=(
                     int((time.monotonic() - run.started_at) * 1000) if run is not None else None
                 ),
@@ -118,6 +145,28 @@ class RunMetricsCollector:
                 estimated_cost=self._sum_float(record.estimated_cost for record in records),
             )
         )
+
+    @staticmethod
+    def _calibrate_repeated_tokens(
+        repeated_chars: int, total_chars: int, prompt_tokens: int | None
+    ) -> int | None:
+        """Символы общего префикса → токены по точному счётчику промпта.
+
+        Без счётчика от провайдера калибровать не во что — None; пустой
+        промпт повторять нечего — 0.
+        """
+        if prompt_tokens is None:
+            return None
+        if total_chars == 0:
+            return 0
+        return round(prompt_tokens * repeated_chars / total_chars)
+
+    @staticmethod
+    def _repeated_ratio(prompt_tokens: int | None, repeated_tokens: int | None) -> float | None:
+        """Доля повторного контекста в промпт-токенах запуска (proxy cache hit)."""
+        if repeated_tokens is None or not prompt_tokens:
+            return None
+        return round(repeated_tokens / prompt_tokens, 4)
 
     def _estimate_cost(
         self, prompt_tokens: int | None, completion_tokens: int | None

@@ -30,11 +30,15 @@ class MeteredInferenceProvider:
         except Exception:
             # Неудачный вызов — тоже вызов модели: пишем событие без токенов
             # и пробрасываем исключение дальше, как его отдал внутренний слой.
+            # Промпт такого вызова до модели не дошёл — «уже виденным» он не
+            # считается и предыдущим запросом для следующего не станет.
             self._collector.record_llm_call(
                 request_id=request.request_id,
                 model=request.model,
                 latency_ms=self._latency_ms(started_at),
                 usage=None,
+                messages=request.messages,
+                reached_model=False,
             )
             raise
         self._collector.record_llm_call(
@@ -42,6 +46,10 @@ class MeteredInferenceProvider:
             model=request.model,
             latency_ms=self._latency_ms(started_at),
             usage=response.usage,
+            # Сообщения нужны коллектору только для прокси-метрики повторного
+            # контекста (общий префикс с предыдущим запросом запуска).
+            messages=request.messages,
+            reached_model=True,
         )
         return response
 
