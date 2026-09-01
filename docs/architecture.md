@@ -94,6 +94,23 @@ Use case `ProcessUserMessage` и управление чат-сессией. П�
 невалидные аргументы, таймаут и ненулевой exit code — это данные для
 следующего шага модели, а не исключения.
 
+### Метрики токенов — `src/bot/metrics/`
+
+Учёт расхода токенов: обычный диалог оставляет измеримый след. Декоратор
+`MeteredInferenceProvider` реализует Protocol `InferenceProvider` структурно
+и подключается в композиционном корне поверх настоящего адаптера: на каждый
+вызов модели (включая неудачный) он пишет событие `llm_call` — timestamp,
+run id (`RequestId`), модель, номер шага, input/output токены, латентность,
+оценку стоимости. По завершении Запуска агента `ApplicationService` закрывает
+запуск через порт `RunMetrics` — пишется агрегированная запись `run` (шаги,
+суммарные токены, длительность, success), суммы которой сходятся с `llm_call`
+того же запуска. `RunMetricsCollector` копит вызовы по `RequestId`;
+`MetricsRecorder` дописывает обе записи в append-only JSONL
+(`.data/metrics/events.jsonl`) и дублирует их в structlog — по `request_id`
+лог коррелирует с JSONL-строкой по request_id (а при сбое хранилища остаётся единственным следом вызова). События несут только счётчики и
+идентификаторы: содержимое сообщений, команд и ответов модели в метрики
+не попадает; сбой хранилища метрик работу бота не рвёт.
+
 ### Чат-сессии — `src/bot/sessions/`
 
 `ChatSessionStore` — один append-only JSONL-файл на чат
@@ -122,7 +139,8 @@ tool-calls, Pydantic только на границе JSON, таймауты, м
 | `InferenceMessage`, `MessageRole` | `domain/messages.py` | домен | все слои |
 | `ToolSpec` / `ToolCall` / `ToolResult` | `domain/tools.py` | домен; заполняет `ExecTool` | `AgentLoop` |
 | `Tool` (Protocol) | `agent/tools.py` | реализует `ExecTool` | `AgentLoop` |
-| `InferenceProvider` (Protocol) | `inference/provider.py` | реализует адаптер Ollama | `AgentLoop` |
+| `InferenceProvider` (Protocol) | `inference/provider.py` | реализует адаптер Ollama и декоратор метрик | `AgentLoop` |
+| `RunMetrics` (Protocol) | `metrics/collector.py` | реализует `RunMetricsCollector` | `ApplicationService` |
 | `AgentProgress` (Protocol) | `agent/progress.py` | реализует `NullProgress` (заглушка: выполнения команд в чат не выводятся) | `ExecTool` |
 | `ApplicationError` и подтипы | `application/errors.py` | кидают нижние слои | Telegram-слой |
 

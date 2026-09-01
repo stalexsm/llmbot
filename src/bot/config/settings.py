@@ -67,5 +67,10 @@ class Settings(BaseSettings):
     # Каталог скиллов: markdown-файлы с инструкциями; индекс собирается на старте.
     agent_skills_directory: Path = Path("skills")
 
+    # Учёт токенов: цены input/output за 1M токенов (в валюте учёта) для
+    # оценки стоимости в метриках; по умолчанию 0 — стоимость считается нулевой.
+    metrics_input_price_per_mtok: float = Field(default=0.0, ge=0)
+    metrics_output_price_per_mtok: float = Field(default=0.0, ge=0)
+
     log_level: str = "INFO"
     log_format: Literal["console", "json"] = "console"

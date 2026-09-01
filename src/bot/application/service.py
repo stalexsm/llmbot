@@ -10,6 +10,7 @@ from bot.agent.progress import AgentProgress
 from bot.application.models import UserMessageRequest, UserMessageResponse
 from bot.domain.ids import TelegramChatId
 from bot.domain.messages import InferenceMessage, MessageRole
+from bot.metrics.collector import RunMetrics
 from bot.sessions.store import ChatSessionStore
 from bot.sessions.window import trim_to_window
 
@@ -44,11 +45,13 @@ class ApplicationService:
         sessions: ChatSessionStore,
         history_limit: int,
         logger: structlog.stdlib.BoundLogger,
+        metrics: RunMetrics,
     ) -> None:
         self._agent = agent
         self._sessions = sessions
         self._history_limit = history_limit
         self._logger = logger.bind(component="application_service")
+        self._metrics = metrics
         self._chat_locks: dict[TelegramChatId, asyncio.Lock] = {}
 
     async def process_message(
@@ -70,51 +73,60 @@ class ApplicationService:
         request: UserMessageRequest,
         progress: AgentProgress | None,
     ) -> UserMessageResponse:
-        history = trim_to_window(
-            self._sessions.load(request.chat_id),
-            self._history_limit,
-        )
-        user_message = InferenceMessage(role=MessageRole.USER, content=request.text)
-        run = await self._agent.run(request.request_id, history, user_message, progress)
-        # Отказ-подобный ответ — не пишем его в сессию (иначе он учит модель
-        # сдаваться) и пробуем ещё раз: и когда команды провалились, и когда
-        # модель даже не попыталась ими воспользоваться.
-        for attempt in range(1, self._GIVEUP_RETRIES + 2):
-            last_chance = attempt > self._GIVEUP_RETRIES
-            if last_chance or not self._is_broken_run(run):
-                break
-            self._logger.warning(
-                "agent_run_giveup_retry",
-                request_id=request.request_id,
-                attempt=attempt,
+        # Запуск закрывается метрикой при любом исходе: штатный ответ, лимит
+        # шагов или исключение — всегда одна запись run на request_id.
+        run: AgentRun | None = None
+        try:
+            history = trim_to_window(
+                self._sessions.load(request.chat_id),
+                self._history_limit,
             )
+            user_message = InferenceMessage(role=MessageRole.USER, content=request.text)
             run = await self._agent.run(request.request_id, history, user_message, progress)
-        # В сессию попадает только диалог из обмена — сообщение пользователя
-        # и финальный ответ; tool-обмен хранилище отфильтровывает само.
-        # Незавершённые попытки (исключение) сессию не меняют.
-        if not self._is_broken_run(run):
-            self._sessions.append(request.chat_id, *run.exchange)
-        if run.stopped_by_limit:
-            self._logger.warning(
-                "agent_stopped_by_step_limit",
+            # Отказ-подобный ответ — не пишем его в сессию (иначе он учит модель
+            # сдаваться) и пробуем ещё раз: и когда команды провалились, и когда
+            # модель даже не попыталась ими воспользоваться.
+            for attempt in range(1, self._GIVEUP_RETRIES + 2):
+                last_chance = attempt > self._GIVEUP_RETRIES
+                if last_chance or not self._is_broken_run(run):
+                    break
+                self._logger.warning(
+                    "agent_run_giveup_retry",
+                    request_id=request.request_id,
+                    attempt=attempt,
+                )
+                run = await self._agent.run(request.request_id, history, user_message, progress)
+            # В сессию попадает только диалог из обмена — сообщение пользователя
+            # и финальный ответ; tool-обмен хранилище отфильтровывает само.
+            # Незавершённые попытки (исключение) сессию не меняют.
+            if not self._is_broken_run(run):
+                self._sessions.append(request.chat_id, *run.exchange)
+            if run.stopped_by_limit:
+                self._logger.warning(
+                    "agent_stopped_by_step_limit",
+                    request_id=request.request_id,
+                    steps=run.steps_used,
+                )
+                return UserMessageResponse(
+                    request_id=request.request_id,
+                    text="",
+                    stopped_by_step_limit=True,
+                )
+            self._logger.info(
+                "message_processed",
                 request_id=request.request_id,
                 steps=run.steps_used,
             )
+            assert run.final_answer is not None
             return UserMessageResponse(
                 request_id=request.request_id,
-                text="",
-                stopped_by_step_limit=True,
+                text=run.final_answer,
             )
-        self._logger.info(
-            "message_processed",
-            request_id=request.request_id,
-            steps=run.steps_used,
-        )
-        assert run.final_answer is not None
-        return UserMessageResponse(
-            request_id=request.request_id,
-            text=run.final_answer,
-        )
+        finally:
+            self._metrics.finish_run(
+                request.request_id,
+                success=run is not None and not run.stopped_by_limit,
+            )
 
     @classmethod
     def _is_broken_run(cls, run: AgentRun) -> bool:

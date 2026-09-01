@@ -5,9 +5,9 @@ from uuid import uuid4
 
 from aiogram.types import Message
 
-from bot.domain.ids import RequestId, ToolId
+from bot.domain.ids import ModelId, RequestId, ToolId
 from bot.domain.tools import ToolCall
-from bot.inference.models import InferenceRequest, InferenceResponse
+from bot.inference.models import InferenceRequest, InferenceResponse, InferenceUsage
 
 
 class RecordingProgress:
@@ -29,13 +29,22 @@ class MockInferenceProvider:
     Structurally implements ``bot.inference.provider.InferenceProvider``.
     """
 
-    def __init__(self, response_content: str = "Ответ модели") -> None:
+    def __init__(
+        self,
+        response_content: str = "Ответ модели",
+        usage: InferenceUsage | None = None,
+    ) -> None:
         self.response_content = response_content
+        self.usage = usage
         self.requests: list[InferenceRequest] = []
 
     async def generate(self, request: InferenceRequest) -> InferenceResponse:
         self.requests.append(request)
-        return InferenceResponse(request_id=request.request_id, content=self.response_content)
+        return InferenceResponse(
+            request_id=request.request_id,
+            content=self.response_content,
+            usage=self.usage,
+        )
 
 
 class ScriptedInferenceProvider:
@@ -89,6 +98,26 @@ class FailingInferenceProvider:
 
     async def generate(self, request: InferenceRequest) -> InferenceResponse:
         raise self.error
+
+
+class SpyMetricsCollector:
+    """Фальшивка RunMetrics: запоминает закрытые запуски для проверок."""
+
+    def __init__(self) -> None:
+        self.finished: list[tuple[RequestId, bool]] = []
+
+    def record_llm_call(
+        self,
+        *,
+        request_id: RequestId,
+        model: ModelId,
+        latency_ms: int,
+        usage: InferenceUsage | None,
+    ) -> None:
+        pass
+
+    def finish_run(self, request_id: RequestId, *, success: bool) -> None:
+        self.finished.append((request_id, success))
 
 
 def make_telegram_message(text: str, *, message_id: int = 42, chat_id: int = 100) -> Message:

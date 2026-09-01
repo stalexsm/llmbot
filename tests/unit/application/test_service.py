@@ -28,12 +28,14 @@ from bot.domain.ids import (
 from bot.domain.messages import InferenceMessage, MessageRole
 from bot.inference.models import InferenceRequest, InferenceResponse
 from bot.inference.provider import InferenceProvider
+from bot.metrics.collector import RunMetrics
 from bot.sessions.store import ChatSessionStore
 from tests.fakes import (
     FailingInferenceProvider,
     MockInferenceProvider,
     RecordingProgress,
     ScriptedInferenceProvider,
+    SpyMetricsCollector,
     exec_call_response,
     final_response,
 )
@@ -61,7 +63,10 @@ def make_service(
     history_limit: int = 20,
     step_limit: int = 10,
     with_exec_tool: bool = False,
+    metrics: RunMetrics | None = None,
 ) -> ApplicationService:
+    if metrics is None:
+        metrics = SpyMetricsCollector()
     tools: tuple[ExecTool, ...] = ()
     if with_exec_tool:
         tools = (
@@ -85,6 +90,7 @@ def make_service(
         sessions=ChatSessionStore(directory=directory, logger=logger),
         history_limit=history_limit,
         logger=logger,
+        metrics=metrics,
     )
 
 
@@ -446,3 +452,51 @@ async def test_user_content_is_not_logged(
     assert "agent_run_finished" in logged_events
     for call in capturing_logger.calls:
         assert "Секретный текст пользователя" not in str(call.kwargs)
+
+
+async def test_successful_run_finishes_metrics_with_success(
+    logger: structlog.stdlib.BoundLogger, tmp_path: Path
+) -> None:
+    metrics = SpyMetricsCollector()
+    service = make_service(logger, MockInferenceProvider(), tmp_path, metrics=metrics)
+    request = make_request("Привет")
+
+    await service.process_message(request)
+
+    assert metrics.finished == [(request.request_id, True)]
+
+
+async def test_step_limit_run_finishes_metrics_without_success(
+    logger: structlog.stdlib.BoundLogger, tmp_path: Path
+) -> None:
+    metrics = SpyMetricsCollector()
+    provider = ScriptedInferenceProvider(
+        [exec_call_response("echo раз"), exec_call_response("echo два")]
+    )
+    service = make_service(
+        logger, provider, tmp_path, step_limit=2, with_exec_tool=True, metrics=metrics
+    )
+    request = make_request("сделай много")
+
+    response = await service.process_message(request)
+
+    assert response.stopped_by_step_limit is True
+    assert metrics.finished == [(request.request_id, False)]
+
+
+async def test_failed_run_still_finishes_metrics_without_success(
+    logger: structlog.stdlib.BoundLogger, tmp_path: Path
+) -> None:
+    metrics = SpyMetricsCollector()
+    service = make_service(
+        logger,
+        FailingInferenceProvider(InferenceUnavailableError("down")),
+        tmp_path,
+        metrics=metrics,
+    )
+    request = make_request("Привет")
+
+    with pytest.raises(InferenceUnavailableError):
+        await service.process_message(request)
+
+    assert metrics.finished == [(request.request_id, False)]

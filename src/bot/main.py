@@ -24,6 +24,9 @@ from bot.application.service import ApplicationService
 from bot.config.settings import Settings
 from bot.domain.ids import ModelId
 from bot.inference.ollama import OllamaInferenceProvider
+from bot.metrics.collector import RunMetricsCollector
+from bot.metrics.provider import MeteredInferenceProvider
+from bot.metrics.recorder import MetricsRecorder
 from bot.sessions.store import ChatSessionStore
 from bot.telegram.handlers import TelegramHandlers
 
@@ -70,6 +73,17 @@ async def run() -> None:
             logger=logger,
             think=settings.ollama_think,
         )
+        # Учёт токенов: декоратор на шве InferenceProvider пишет llm_call на
+        # каждый вызов модели; сервис закрывает запуск записью run.
+        metrics_collector = RunMetricsCollector(
+            recorder=MetricsRecorder(directory=Path(".data/metrics"), logger=logger),
+            input_price_per_mtok=settings.metrics_input_price_per_mtok,
+            output_price_per_mtok=settings.metrics_output_price_per_mtok,
+        )
+        inference = MeteredInferenceProvider(
+            inner=inference,
+            collector=metrics_collector,
+        )
         exec_tool = ExecTool(
             cwd=Path.cwd(),
             timeout_seconds=settings.agent_exec_timeout_seconds,
@@ -103,6 +117,7 @@ async def run() -> None:
             sessions=ChatSessionStore(directory=Path(".data/chats"), logger=logger),
             history_limit=settings.agent_history_max_messages,
             logger=logger,
+            metrics=metrics_collector,
         )
 
         # aiogram expects a plain numeric timeout here: during polling it
