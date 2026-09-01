@@ -27,6 +27,7 @@ from bot.inference.ollama import OllamaInferenceProvider
 from bot.metrics.collector import RunMetricsCollector
 from bot.metrics.provider import MeteredInferenceProvider
 from bot.metrics.recorder import MetricsRecorder
+from bot.metrics.tool import MeteredTool
 from bot.sessions.store import ChatSessionStore
 from bot.telegram.handlers import TelegramHandlers
 from tests.fakes import make_telegram_message
@@ -59,7 +60,7 @@ def make_stack(
         inference=metered,
         model=ModelId("qwen3:1.7b"),
         system_prompt=SYSTEM_PROMPT,
-        tools=(exec_tool,),
+        tools=(MeteredTool(inner=exec_tool, collector=metrics_collector),),
         step_limit=step_limit,
         logger=logger,
     )
@@ -229,6 +230,21 @@ async def test_full_pipeline_exec_tool_roundtrip(
     calls = [call.args[1] for call in request_mock.await_args_list]
     assert [type(call) for call in calls] == [SendMessage]
     assert calls[0].text == "Модель увидела вывод команды"
+    # След метрик: llm_call → tool_call → llm_call → агрегированный run.
+    lines = [
+        json.loads(line)
+        for line in (tmp_path / "metrics" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [line["kind"] for line in lines] == ["llm_call", "tool_call", "llm_call", "run"]
+    tool_line = lines[1]
+    assert tool_line["tool_name"] == "exec:other"
+    assert tool_line["succeeded"] is True
+    assert tool_line["request_id"] == lines[0]["request_id"]
+    assert tool_line["output_tokens"] > 0
+    # Содержимое команды и её вывода в метрики не попадает.
+    tool_dump = json.dumps(tool_line, ensure_ascii=False)
+    assert "echo" not in tool_dump
+    assert "привет из shell" not in tool_dump
 
 
 async def test_full_pipeline_step_limit_returns_honest_stop(

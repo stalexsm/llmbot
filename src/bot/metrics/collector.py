@@ -14,7 +14,7 @@ from typing import Protocol
 
 from bot.domain.ids import ModelId, RequestId
 from bot.inference.models import InferenceUsage
-from bot.metrics.models import LlmCallRecord, RunRecord
+from bot.metrics.models import LlmCallRecord, RunRecord, ToolCallRecord, estimate_output_tokens
 from bot.metrics.recorder import MetricsRecorder
 
 
@@ -74,6 +74,30 @@ class RunMetricsCollector:
         )
         run.records.append(record)
         self._recorder.record(record)
+
+    def record_tool_call(
+        self,
+        *,
+        request_id: RequestId,
+        tool_name: str,
+        input_size: int,
+        output_size: int,
+        duration_ms: int,
+        succeeded: bool,
+    ) -> None:
+        """Записать один вызов инструмента с оценкой выходных токенов."""
+        self._recorder.record(
+            ToolCallRecord(
+                timestamp=_utc_now_iso(),
+                request_id=request_id,
+                tool_name=tool_name,
+                input_size=input_size,
+                output_size=output_size,
+                output_tokens=estimate_output_tokens(output_size),
+                duration_ms=duration_ms,
+                succeeded=succeeded,
+            )
+        )
 
     def finish_run(self, request_id: RequestId, *, success: bool) -> None:
         """Закрыть запуск: агрегированная запись run поверх его llm_call."""

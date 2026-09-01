@@ -140,3 +140,27 @@ def test_state_is_dropped_after_finish(tmp_path: Path) -> None:
 
     runs = [line for line in read_lines(directory) if line["kind"] == "run"]
     assert [run["steps"] for run in runs] == [1, 0]
+
+
+def test_tool_call_writes_estimate_from_output_size(tmp_path: Path) -> None:
+    collector, directory = make_collector(tmp_path)
+
+    collector.record_tool_call(
+        request_id=REQUEST_ID,
+        tool_name="exec:ls",
+        input_size=30,
+        output_size=800,
+        duration_ms=12,
+        succeeded=True,
+    )
+
+    (line,) = read_lines(directory)
+    assert line["kind"] == "tool_call"
+    assert line["request_id"] == "req-1"
+    assert line["tool_name"] == "exec:ls"
+    assert line["input_size"] == 30
+    assert line["output_size"] == 800
+    assert line["output_tokens"] == 200
+    assert line["duration_ms"] == 12
+    assert line["succeeded"] is True
+    assert "timestamp" in line

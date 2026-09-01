@@ -31,6 +31,15 @@ def strip_log_fields(payload: dict[str, str | int | float | bool | None]) -> dic
     return {key: value for key, value in payload.items() if key not in _NON_LOG_FIELDS}
 
 
+def estimate_output_tokens(output_chars: int) -> int:
+    """Грубая оценка выходных токенов по размеру текста (~4 символа на токен).
+
+    Точных токенов у exec нет — текст команды и вывода считается посимвольно;
+    оценка достаточна для профиля «какие классы команд сколько съели».
+    """
+    return output_chars // 4
+
+
 @dataclass(frozen=True)
 class LlmCallRecord:
     """Один вызов модели: шаг запуска, токены, латентность, оценка стоимости."""
@@ -63,6 +72,45 @@ class LlmCallRecord:
             "completion_tokens": self.completion_tokens,
             "latency_ms": self.latency_ms,
             "estimated_cost": self.estimated_cost,
+        }
+
+
+@dataclass(frozen=True)
+class ToolCallRecord:
+    """Один вызов инструмента: класс команды, размеры, длительность, оценка токенов.
+
+    Содержимое команды и её вывода не записывается — только размеры в символах
+    и статус; выходные токены оцениваются по размеру результата.
+    """
+
+    timestamp: str
+    request_id: RequestId
+    tool_name: str
+    input_size: int
+    output_size: int
+    output_tokens: int
+    duration_ms: int
+    succeeded: bool
+
+    @property
+    def kind(self) -> str:
+        return "tool_call"
+
+    @property
+    def log_event(self) -> str:
+        return "metrics_tool_call"
+
+    def to_payload(self) -> dict[str, str | int | float | bool | None]:
+        return {
+            "kind": self.kind,
+            "timestamp": self.timestamp,
+            "request_id": str(self.request_id),
+            "tool_name": self.tool_name,
+            "input_size": self.input_size,
+            "output_size": self.output_size,
+            "output_tokens": self.output_tokens,
+            "duration_ms": self.duration_ms,
+            "succeeded": self.succeeded,
         }
 
 

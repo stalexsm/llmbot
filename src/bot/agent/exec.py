@@ -7,7 +7,6 @@
 
 import asyncio
 import contextlib
-import json
 import os
 import signal
 import time
@@ -15,6 +14,7 @@ from pathlib import Path
 
 import structlog
 
+from bot.agent.command_class import command_from_arguments
 from bot.agent.progress import AgentProgress
 from bot.domain.ids import RequestId, ToolId
 from bot.domain.tools import ToolCall, ToolParameter, ToolResult, ToolSpec
@@ -116,7 +116,7 @@ class ExecTool:
     async def execute(
         self, request_id: RequestId, call: ToolCall, progress: AgentProgress
     ) -> ToolResult:
-        command = self._extract_command(call)
+        command = command_from_arguments(call.arguments)
         if command is None:
             return ToolResult(
                 content=_truncate(
@@ -205,19 +205,6 @@ class ExecTool:
             os.killpg(os.getpgid(process.pid), signal.SIGKILL)
         with contextlib.suppress(Exception):
             await process.wait()
-
-    @staticmethod
-    def _extract_command(call: ToolCall) -> str | None:
-        try:
-            arguments = json.loads(call.arguments)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(arguments, dict):
-            return None
-        command = arguments.get("command")
-        if not isinstance(command, str) or not command.strip():
-            return None
-        return command
 
     async def _report_started(self, progress: AgentProgress, command: str) -> None:
         # Сбой показа шага в чате не должен рывать выполнение команды.

@@ -27,6 +27,7 @@ from bot.inference.ollama import OllamaInferenceProvider
 from bot.metrics.collector import RunMetricsCollector
 from bot.metrics.provider import MeteredInferenceProvider
 from bot.metrics.recorder import MetricsRecorder
+from bot.metrics.tool import MeteredTool
 from bot.sessions.store import ChatSessionStore
 from bot.telegram.handlers import TelegramHandlers
 
@@ -90,6 +91,9 @@ async def run() -> None:
             max_output_chars=settings.agent_exec_max_output_chars,
             logger=logger,
         )
+        # Учёт вызовов инструментов: декоратор на шве Tool пишет tool_call
+        # на каждую выполненную команду exec.
+        metered_exec_tool = MeteredTool(inner=exec_tool, collector=metrics_collector)
         # Индекс скиллов собирается один раз на старте: новый файл попадёт
         # в индекс при следующем запуске, без правки кода.
         skills = load_skills(settings.agent_skills_directory, logger)
@@ -108,7 +112,7 @@ async def run() -> None:
             inference=inference,
             model=ModelId(settings.ollama_model),
             system_prompt=build_system_prompt(render_skills_index(skills)),
-            tools=(exec_tool,),
+            tools=(metered_exec_tool,),
             step_limit=settings.agent_max_steps,
             logger=logger,
         )
