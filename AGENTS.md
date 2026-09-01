@@ -1,55 +1,47 @@
-# llmbot
+# llmbot Project Instructions
 
-Telegram-бот с агентным циклом поверх Ollama. Слои и единственный способ их
-общения — типизированные контракты:
+## Language and Output
 
-```text
-Telegram-адаптер (aiogram)
-    ↓
-ApplicationService (use case: ProcessUserMessage)
-    ↓
-AgentLoop (агентный цикл)
-    ↓
-InferenceProvider (Protocol)
-    ↓
-OllamaInferenceProvider (адаптер, httpx)
-    ↓
-Ollama
-```
+Think and plan in English without exposing private chain-of-thought. Reply in Russian unless the user requests another language.
 
-Центральный принцип: `Telegram ≠ Application ≠ Agent ≠ Inference ≠ Ollama`.
+Lead with the result; include only necessary details, checks, risks, or blockers. Skip introductions, restatement, and long logs.
 
-## Справочники
+Project: a Telegram bot over a local Ollama LLM acting as a minimal autonomous agent (agentic loop, `exec` tool, skills). Use `CONTEXT.md` for canonical domain terms.
 
-Читай справочник, когда задача попадает в его ветку. Прочитанный документ
-остаётся в контексте до конца сессии: при повторной необходимости опирайся на
-уже прочитанное, повторное чтение того же файла — лишняя работа.
+## Project Index
 
-- Меняешь границы слоёв, добавляешь компонент или провайдер, трогаешь
-  DI/композиционный корень или обработку ошибок между слоями —
-  `docs/architecture.md`.
-- Пишешь или правишь Python-код (типизация, `NewType`, dataclasses, Pydantic,
-  `Protocol`/`StrEnum`) — `docs/code-style.md`.
-- Трогаешь конфигурацию/`Settings`, логирование, таймауты или `RequestId` —
-  `docs/runtime.md`.
+Route each task to the narrowest source; this is an index, not documentation.
 
-## Инструменты и проверки
+- `AGENTS.md` — local agent rules and reference routing.
+- `src/bot/` — layered code: `telegram/` → `application/` → `agent/` → `inference/` (Ollama adapter), plus `domain/`, `sessions/`, `config/`; `main.py` is the composition root.
+- `docs/architecture.md` — layer boundaries, DI, cross-layer errors; `docs/code-style.md` — typing and modeling; `docs/runtime.md` — settings, logging, timeouts, secrets.
+- `CONTEXT.md` + `docs/adr/` — domain glossary and decisions; read before exploring an area.
+- `docs/agents/` — issue tracker (`.scratch/<feature>/`), triage labels, domain-docs workflow.
+- `tests/unit/`, `tests/integration/` — verification; `tests/fakes.py` fakes `InferenceProvider` (no Ollama needed).
+- `skills/<name>/SKILL.md` — the bot's runtime skills; `env.example` — configuration reference.
 
-- Менеджер пакетов — только `uv`; `uv.lock` коммитится. Зависимости и их версии 
-- читаются из `pyproject.toml` + `uv.lock`, а не дублируются здесь.
-- Все команды — через `uv run`:
-  - `uv run python -m bot.main` — запуск бота;
-  - `uv run ty check` — типы;
-  - `uv run ruff check .` — линт;
-  - `uv run ruff format --check .` — формат;
-  - `uv run pytest` — тесты.
+Example: a layer-boundary change routes to `docs/architecture.md`; a new setting routes to `docs/runtime.md` and `src/bot/config/`.
 
-## Тесты
+## Search First, Frugal Reading, and Deny Noise
 
-- Юнит-тесты приложения не требуют запущенный Ollama: `InferenceProvider`
-  подменяется фейком (`tests/fakes.py`).
-- Четыре гейта должны проходить перед завершением работы:
-  `ty check`, `ruff check`, `ruff format --check`, `pytest`.
+1. Open an exact user-named file; otherwise use `rg` inside the routed area (symbols, errors, imports, settings).
+2. Open only matches, locate the relevant symbol, and read a small range plus the complete logical unit.
+3. Expand only as needed to imports, callers, and tests; stop when evidence is sufficient.
+4. Do not inventory the repository; `README.md` already maps the structure.
+
+Deny by default unless required: `.env`, `.venv/`, `.data/`, caches, build output, `uv.lock`, and logs; enter `.scratch/` only for issue-tracker work.
+
+## Project-Specific Rules
+
+- Layers talk only through typed contracts (`Telegram ≠ Application ≠ Agent ≠ Inference ≠ Ollama`); keep boundaries exact.
+- Python style: `NewType` for IDs, frozen dataclasses internally, Pydantic only at config/JSON boundaries, `Protocol` for interfaces — see `docs/code-style.md`.
+- Package manager is `uv` only; `uv.lock` is committed; run everything via `uv run` (bot: `uv run python -m bot.main`).
+- Before finishing, pass all four gates: `uv run ty check`, `uv run ruff check .`, `uv run ruff format --check .`, `uv run pytest`; state exactly what passed.
+- Never invent facts, paths, or APIs; ask only when essential information cannot be found safely.
+- A reference doc read once stays in context for the session; do not re-read it.
+- Secrets (bot token) live only in env/`.env`; structlog logs IDs and metrics only — never message contents, commands, or secrets (see `docs/runtime.md`).
+
+Example: a chat-history bug → search `src/bot/sessions/` for `window|history` → read the module and its unit tests.
 
 ## Agent skills
 
