@@ -114,6 +114,7 @@ async def run() -> None:
             system_prompt=build_system_prompt(render_skills_index(skills)),
             tools=(metered_exec_tool,),
             step_limit=settings.agent_max_steps,
+            keep_steps=settings.agent_compaction_keep_steps,
             logger=logger,
         )
         service = ApplicationService(

@@ -93,6 +93,7 @@ async def run_benchmark(settings: Settings, logger: structlog.stdlib.BoundLogger
             system_prompt=build_system_prompt(render_skills_index(skills)),
             tools=(exec_tool,),
             step_limit=settings.agent_max_steps,
+            keep_steps=settings.agent_compaction_keep_steps,
             logger=logger,
         )
         runner = BenchmarkRunner(agent=agent, tracker=tracker, metrics=collector, logger=logger)
