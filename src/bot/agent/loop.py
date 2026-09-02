@@ -7,10 +7,11 @@
 """
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import structlog
 
+from bot.agent.command_class import command_from_arguments
 from bot.agent.progress import AgentProgress, NullProgress
 from bot.agent.prompts import build_date_block
 from bot.agent.tools import Tool
@@ -93,11 +94,13 @@ class AgentLoop:
         tools: tuple[Tool, ...],
         step_limit: int,
         logger: structlog.stdlib.BoundLogger,
+        keep_steps: int = 3,
     ) -> None:
         self._inference = inference
         self._model = model
         self._system_prompt = system_prompt
         self._step_limit = step_limit
+        self._keep_steps = keep_steps
         self._logger = logger.bind(component="agent_loop")
         self._tools = {tool.spec.name: tool for tool in tools}
         self._tool_specs = tuple(tool.spec for tool in tools)
@@ -124,7 +127,11 @@ class AgentLoop:
         exchange: list[InferenceMessage] = [user_message]
         empty_retries = 0
         failed_tool_results = 0
+        # tool-сообщения каждого завершённого шага: индекс в messages плюс
+        # вызов и статус — сырьё для компакции старших шагов.
+        step_tools: list[list[tuple[int, ToolCall, bool]]] = []
         for step in range(1, self._step_limit + 1):
+            self._compact_old_steps(messages, step_tools)
             response = await self._inference.generate(
                 InferenceRequest(
                     request_id=request_id,
@@ -183,10 +190,12 @@ class AgentLoop:
                 )
             messages.append(assistant)
             exchange.append(assistant)
+            executed_results: list[ToolResult] = []
             for call in response.tool_calls:
                 result = await self._execute(request_id, call, reporter)
                 if not result.succeeded:
                     failed_tool_results += 1
+                executed_results.append(result)
                 result_message = InferenceMessage(
                     role=MessageRole.TOOL,
                     content=result.content,
@@ -194,6 +203,14 @@ class AgentLoop:
                 )
                 messages.append(result_message)
                 exchange.append(result_message)
+            step_tools.append(
+                [
+                    (len(messages) - len(response.tool_calls) + i, call, result.succeeded)
+                    for i, (call, result) in enumerate(
+                        zip(response.tool_calls, executed_results, strict=True)
+                    )
+                ]
+            )
             self._logger.info(
                 "agent_step_finished",
                 request_id=request_id,
@@ -208,6 +225,30 @@ class AgentLoop:
             stopped_by_limit=True,
             failed_tool_results=failed_tool_results,
         )
+
+    def _compact_old_steps(
+        self,
+        messages: list[InferenceMessage],
+        step_tools: list[list[tuple[int, ToolCall, bool]]],
+    ) -> None:
+        """Схлопнуть tool-выводы шагов, вышедших из окна последних K шагов.
+
+        Коснулся только рабочего множества запуска (список ``messages``):
+        записанный обмен и чат-сессия не меняются. Перезаписи идемпотентны:
+        старый шаг даёт ту же сигнатуру при каждом пересчёте.
+        """
+        if self._keep_steps <= 0 or len(step_tools) <= self._keep_steps:
+            return
+        for entries in step_tools[: -self._keep_steps]:
+            for index, call, succeeded in entries:
+                message = messages[index]
+                if message.role is not MessageRole.TOOL:
+                    continue
+                command = command_from_arguments(call.arguments)
+                # Невалидные аргументи не тащат сырой JSON в сигнатуру.
+                label = command if command is not None else str(call.name)
+                status = "ok" if succeeded else "ошибка"
+                messages[index] = replace(message, content=f"{label} → {status}")
 
     async def _execute(
         self,

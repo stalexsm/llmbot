@@ -52,3 +52,33 @@ def test_think_enabled_from_env(monkeypatch: MonkeyPatch, raw: str) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
     monkeypatch.setenv("OLLAMA_THINK", raw)
     assert Settings(_env_file=None).ollama_think is True
+
+
+def test_metrics_prices_default_to_zero(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.delenv("METRICS_INPUT_PRICE_PER_MTOK", raising=False)
+    monkeypatch.delenv("METRICS_OUTPUT_PRICE_PER_MTOK", raising=False)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.metrics_input_price_per_mtok == 0.0
+    assert settings.metrics_output_price_per_mtok == 0.0
+
+
+def test_metrics_prices_from_env(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("METRICS_INPUT_PRICE_PER_MTOK", "0.5")
+    monkeypatch.setenv("METRICS_OUTPUT_PRICE_PER_MTOK", "1.5")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.metrics_input_price_per_mtok == 0.5
+    assert settings.metrics_output_price_per_mtok == 1.5
+
+
+def test_metrics_negative_price_fails_fast(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("METRICS_INPUT_PRICE_PER_MTOK", "-1")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)

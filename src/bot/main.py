@@ -24,6 +24,10 @@ from bot.application.service import ApplicationService
 from bot.config.settings import Settings
 from bot.domain.ids import ModelId
 from bot.inference.ollama import OllamaInferenceProvider
+from bot.metrics.collector import RunMetricsCollector
+from bot.metrics.provider import MeteredInferenceProvider
+from bot.metrics.recorder import METRICS_DIRECTORY, MetricsRecorder
+from bot.metrics.tool import MeteredTool
 from bot.sessions.store import ChatSessionStore
 from bot.telegram.handlers import TelegramHandlers
 
@@ -70,12 +74,26 @@ async def run() -> None:
             logger=logger,
             think=settings.ollama_think,
         )
+        # Учёт токенов: декоратор на шве InferenceProvider пишет llm_call на
+        # каждый вызов модели; сервис закрывает запуск записью run.
+        metrics_collector = RunMetricsCollector(
+            recorder=MetricsRecorder(directory=METRICS_DIRECTORY, logger=logger),
+            input_price_per_mtok=settings.metrics_input_price_per_mtok,
+            output_price_per_mtok=settings.metrics_output_price_per_mtok,
+        )
+        inference = MeteredInferenceProvider(
+            inner=inference,
+            collector=metrics_collector,
+        )
         exec_tool = ExecTool(
             cwd=Path.cwd(),
             timeout_seconds=settings.agent_exec_timeout_seconds,
             max_output_chars=settings.agent_exec_max_output_chars,
             logger=logger,
         )
+        # Учёт вызовов инструментов: декоратор на шве Tool пишет tool_call
+        # на каждую выполненную команду exec.
+        metered_exec_tool = MeteredTool(inner=exec_tool, collector=metrics_collector)
         # Индекс скиллов собирается один раз на старте: новый файл попадёт
         # в индекс при следующем запуске, без правки кода.
         skills = load_skills(settings.agent_skills_directory, logger)
@@ -94,8 +112,9 @@ async def run() -> None:
             inference=inference,
             model=ModelId(settings.ollama_model),
             system_prompt=build_system_prompt(render_skills_index(skills)),
-            tools=(exec_tool,),
+            tools=(metered_exec_tool,),
             step_limit=settings.agent_max_steps,
+            keep_steps=settings.agent_compaction_keep_steps,
             logger=logger,
         )
         service = ApplicationService(
@@ -103,6 +122,7 @@ async def run() -> None:
             sessions=ChatSessionStore(directory=Path(".data/chats"), logger=logger),
             history_limit=settings.agent_history_max_messages,
             logger=logger,
+            metrics=metrics_collector,
         )
 
         # aiogram expects a plain numeric timeout here: during polling it

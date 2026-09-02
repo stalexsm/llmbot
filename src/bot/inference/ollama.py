@@ -26,7 +26,7 @@ from bot.application.errors import (
 from bot.domain.ids import ToolId
 from bot.domain.messages import InferenceMessage
 from bot.domain.tools import ToolCall, ToolSpec
-from bot.inference.models import InferenceRequest, InferenceResponse
+from bot.inference.models import InferenceRequest, InferenceResponse, InferenceUsage
 
 # Служебные размышления модели не должны попадать в контент ответа.
 _THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL)
@@ -58,6 +58,13 @@ class _ChatResponsePayload(BaseModel):
     """Wire format of an Ollama chat completion response (external boundary only)."""
 
     message: _ChatMessagePayload
+    # Usage-поля /api/chat: у старых сборок и в незавершённых ответах отсутствуют.
+    total_duration: int | None = None
+    load_duration: int | None = None
+    prompt_eval_count: int | None = None
+    prompt_eval_duration: int | None = None
+    eval_count: int | None = None
+    eval_duration: int | None = None
 
 
 class OllamaInferenceProvider:
@@ -124,6 +131,7 @@ class OllamaInferenceProvider:
             tool_calls=tuple(
                 _tool_call_to_domain(call.function) for call in payload.message.tool_calls or ()
             ),
+            usage=_usage_to_domain(payload),
         )
 
     def _serialize_request(self, request: InferenceRequest) -> dict[str, object]:
@@ -181,6 +189,30 @@ class OllamaInferenceProvider:
         if unclosed != -1:
             stripped = stripped[:unclosed]
         return stripped.strip()
+
+
+def _usage_to_domain(payload: _ChatResponsePayload) -> InferenceUsage | None:
+    """Привести usage-поля ответа к доменной модели; без них — ``None``."""
+    if all(
+        value is None
+        for value in (
+            payload.total_duration,
+            payload.load_duration,
+            payload.prompt_eval_count,
+            payload.prompt_eval_duration,
+            payload.eval_count,
+            payload.eval_duration,
+        )
+    ):
+        return None
+    return InferenceUsage(
+        prompt_tokens=payload.prompt_eval_count,
+        completion_tokens=payload.eval_count,
+        total_duration_ns=payload.total_duration,
+        load_duration_ns=payload.load_duration,
+        prompt_eval_duration_ns=payload.prompt_eval_duration,
+        eval_duration_ns=payload.eval_duration,
+    )
 
 
 def _tool_call_to_domain(function: _ToolCallFunctionPayload) -> ToolCall:

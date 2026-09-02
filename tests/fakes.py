@@ -5,9 +5,10 @@ from uuid import uuid4
 
 from aiogram.types import Message
 
-from bot.domain.ids import RequestId, ToolId
+from bot.domain.ids import ModelId, RequestId, ToolId
+from bot.domain.messages import InferenceMessage
 from bot.domain.tools import ToolCall
-from bot.inference.models import InferenceRequest, InferenceResponse
+from bot.inference.models import InferenceRequest, InferenceResponse, InferenceUsage
 
 
 class RecordingProgress:
@@ -29,13 +30,22 @@ class MockInferenceProvider:
     Structurally implements ``bot.inference.provider.InferenceProvider``.
     """
 
-    def __init__(self, response_content: str = "Ответ модели") -> None:
+    def __init__(
+        self,
+        response_content: str = "Ответ модели",
+        usage: InferenceUsage | None = None,
+    ) -> None:
         self.response_content = response_content
+        self.usage = usage
         self.requests: list[InferenceRequest] = []
 
     async def generate(self, request: InferenceRequest) -> InferenceResponse:
         self.requests.append(request)
-        return InferenceResponse(request_id=request.request_id, content=self.response_content)
+        return InferenceResponse(
+            request_id=request.request_id,
+            content=self.response_content,
+            usage=self.usage,
+        )
 
 
 class ScriptedInferenceProvider:
@@ -50,6 +60,11 @@ class ScriptedInferenceProvider:
         if not self._responses:
             raise AssertionError("scripted inference responses are exhausted")
         return self._responses.pop(0)
+
+
+def tool_call_arguments(command: str) -> str:
+    """JSON-аргументы вызова exec-инструмента для скриптованных ответов."""
+    return json.dumps({"command": command}, ensure_ascii=False)
 
 
 def exec_call_response(*commands: str) -> InferenceResponse:
@@ -89,6 +104,28 @@ class FailingInferenceProvider:
 
     async def generate(self, request: InferenceRequest) -> InferenceResponse:
         raise self.error
+
+
+class SpyMetricsCollector:
+    """Фальшивка RunMetrics: запоминает закрытые запуски для проверок."""
+
+    def __init__(self) -> None:
+        self.finished: list[tuple[RequestId, bool]] = []
+
+    def record_llm_call(
+        self,
+        *,
+        request_id: RequestId,
+        model: ModelId,
+        latency_ms: int,
+        usage: InferenceUsage | None,
+        messages: tuple[InferenceMessage, ...],
+        reached_model: bool,
+    ) -> None:
+        pass
+
+    def finish_run(self, request_id: RequestId, *, success: bool) -> None:
+        self.finished.append((request_id, success))
 
 
 def make_telegram_message(text: str, *, message_id: int = 42, chat_id: int = 100) -> Message:

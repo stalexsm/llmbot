@@ -23,6 +23,7 @@ from tests.fakes import (
     FailingInferenceProvider,
     MockInferenceProvider,
     ScriptedInferenceProvider,
+    SpyMetricsCollector,
     exec_call_response,
     final_response,
     make_telegram_message,
@@ -53,6 +54,7 @@ def make_service(
         sessions=ChatSessionStore(directory=tmp_path, logger=logger),
         history_limit=20,
         logger=logger,
+        metrics=SpyMetricsCollector(),
     )
 
 

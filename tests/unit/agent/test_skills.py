@@ -253,8 +253,8 @@ class TestRenderSkillsIndex:
     def test_footer_tells_where_skill_files_live(self) -> None:
         section = render_skills_index(_ENTRIES)
 
-        # Пример пути выводится из реальной записи, а не зашит литералом.
-        assert "каталоге скиллов под именем из индекса" in section
+        # Путь в примере выводится из имени реальной записи, а не зашит литералом.
+        assert "каталоге скиллов" in section
         assert "cat skills/weather/SKILL.md" in section
 
     def test_index_tells_model_to_read_file_via_exec(self) -> None:
@@ -317,6 +317,49 @@ class TestBuildSystemPrompt:
         assert "скилл" not in SYSTEM_PROMPT.lower()
 
 
+class TestPromptBudget:
+    """Бюджет системного промпта (оптимизация 3: сжатие по данным аудита).
+
+    Промпт уходит в каждый шаг каждого запуска, поэтому его размер — прямая
+    статья расхода токенов. Гард держит статичную часть (база, блок даты)
+    в пределах бюджета символов; qwen3 токенизирует русский примерно в
+    2.4 символа на токен. Индекс скиллов не лимитируется: он растёт
+    с числом скиллов и управляется владельцем, а не кодом.
+    """
+
+    _BASE_BUDGET_CHARS = 900
+    _DATE_BUDGET_CHARS = 150
+
+    def test_base_prompt_fits_budget(self) -> None:
+        assert len(SYSTEM_PROMPT) <= self._BASE_BUDGET_CHARS, (
+            f"системный промпт раздулся: {len(SYSTEM_PROMPT)} > {self._BASE_BUDGET_CHARS} символов"
+        )
+
+    def test_date_block_fits_budget(self) -> None:
+        from datetime import datetime
+
+        block = build_date_block(datetime(2026, 8, 27, 14, 30))
+
+        assert len(block) <= self._DATE_BUDGET_CHARS
+
+    def test_semantic_anchors_survive_compression(
+        self, repo_root: Path, logger: structlog.stdlib.BoundLogger
+    ) -> None:
+        """Сжатие не должно выкидывать поведенчески критичные правила."""
+        skills = load_skills(repo_root / "skills", logger)
+        prompt = build_system_prompt(render_skills_index(skills))
+
+        # Точная фраза честного отказа: её ищет ApplicationService.
+        assert "Я не знаю точного ответа на этот вопрос" in prompt
+        # Имя инструмента и анти-эхо правило.
+        assert "execute_command" in prompt
+        assert "stdout" in prompt
+        # Чтение скилла файлом через exec с примером пути.
+        assert "cat skills/weather/SKILL.md" in prompt
+        # Живые данные — только через инструмент.
+        assert "Живые данные" in prompt
+
+
 class TestBuildDateBlock:
     """Блок актуальной даты: рендерится на каждый запуск цикла."""
 
@@ -328,9 +371,8 @@ class TestBuildDateBlock:
         block = build_date_block(moment)
 
         assert block == (
-            "<date>Сегодняшняя дата: 27 августа 2026 года, четверг. "
-            "Если нужны точные дата или время — уточняй их командой "
-            "execute_command (date).</date>"
+            "<date>Сегодня: 27 августа 2026, четверг. "
+            "Точные дату и время — командой execute_command (date).</date>"
         )
 
     def test_block_is_asked_fresh_per_call(self) -> None:

@@ -64,8 +64,18 @@ class Settings(BaseSettings):
     # Окно истории чат-сессии: сколько последних сообщений уходит в запрос.
     agent_history_max_messages: int = Field(default=20, ge=1)
 
+    # Компакция старших tool-выводов в агентном цикле: выводы шагов старше
+    # последних K схлопываются в сигнатуру «команда → ok/ошибка». Записанная
+    # чат-сессия не меняется. 0 — выключено.
+    agent_compaction_keep_steps: int = Field(default=3, ge=0)
+
     # Каталог скиллов: markdown-файлы с инструкциями; индекс собирается на старте.
     agent_skills_directory: Path = Path("skills")
+
+    # Учёт токенов: цены input/output за 1M токенов (в валюте учёта) для
+    # оценки стоимости в метриках; по умолчанию 0 — стоимость считается нулевой.
+    metrics_input_price_per_mtok: float = Field(default=0.0, ge=0)
+    metrics_output_price_per_mtok: float = Field(default=0.0, ge=0)
 
     log_level: str = "INFO"
     log_format: Literal["console", "json"] = "console"

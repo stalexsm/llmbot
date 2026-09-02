@@ -30,6 +30,7 @@ def make_loop(
     tmp_path: Path,
     *,
     step_limit: int = 10,
+    keep_steps: int = 3,
 ) -> AgentLoop:
     exec_tool = ExecTool(cwd=tmp_path, timeout_seconds=5.0, max_output_chars=4000, logger=logger)
     return AgentLoop(
@@ -38,8 +39,13 @@ def make_loop(
         system_prompt="Ты тестовый агент.",
         tools=(exec_tool,),
         step_limit=step_limit,
+        keep_steps=keep_steps,
         logger=logger,
     )
+
+
+def _tool_messages(request_messages: tuple[InferenceMessage, ...]) -> list[InferenceMessage]:
+    return [message for message in request_messages if message.role is MessageRole.TOOL]
 
 
 async def test_simple_question_is_answered_in_one_step(
@@ -63,7 +69,63 @@ async def test_simple_question_is_answered_in_one_step(
     request = provider.requests[0]
     assert request.tools[0].name == "execute_command"
     assert [message.role for message in request.messages] == [MessageRole.SYSTEM, MessageRole.USER]
-    assert "Сегодняшняя дата:" in request.messages[0].content
+    assert "Сегодня:" in request.messages[0].content
+
+
+async def test_tool_outputs_older_than_keep_steps_are_compacted(
+    logger: structlog.stdlib.BoundLogger, tmp_path: Path
+) -> None:
+    provider = ScriptedInferenceProvider(
+        [
+            exec_call_response("echo один"),
+            exec_call_response("false"),
+            exec_call_response("echo три"),
+            exec_call_response("echo четыре"),
+            final_response("Готово"),
+        ]
+    )
+    loop = make_loop(logger, provider, tmp_path, step_limit=5, keep_steps=1)
+
+    run = await loop.run(RequestId(str(uuid4())), (), USER)
+
+    assert run.final_answer == "Готово"
+    # Шаг 4 (запрос index 3): вывод шага 3 полный, шагов 1-2 — схлопнут в сигнатуру.
+    step4_tools = _tool_messages(provider.requests[3].messages)
+    assert step4_tools[0].content == "echo один → ok"
+    assert step4_tools[1].content == "false → ошибка"
+    assert step4_tools[2].content.startswith("exit_code")
+    assert "три\n" in step4_tools[2].content
+    # Шаг 5: шаг 4 ещё в окне — полный вывод; шаги 1-3 схлопнуты.
+    step5_tools = _tool_messages(provider.requests[4].messages)
+    assert step5_tools[0].content == "echo один → ok"
+    assert step5_tools[1].content == "false → ошибка"
+    assert step5_tools[2].content == "echo три → ok"
+    assert step5_tools[3].content.startswith("exit_code")
+    assert "четыре\n" in step5_tools[3].content
+    # Записанный обмен запуска не тронут: полные выводы остаются в exchange.
+    exchange_tools = [message for message in run.exchange if message.role is MessageRole.TOOL]
+    assert "один\n" in exchange_tools[0].content
+
+
+async def test_keep_steps_zero_disables_compaction(
+    logger: structlog.stdlib.BoundLogger, tmp_path: Path
+) -> None:
+    provider = ScriptedInferenceProvider(
+        [
+            exec_call_response("echo один"),
+            exec_call_response("echo два"),
+            exec_call_response("echo три"),
+            exec_call_response("echo четыре"),
+            final_response("Готово"),
+        ]
+    )
+    loop = make_loop(logger, provider, tmp_path, step_limit=5, keep_steps=0)
+
+    await loop.run(RequestId(str(uuid4())), (), USER)
+
+    for request in provider.requests:
+        for message in _tool_messages(request.messages):
+            assert "exit_code" in message.content
 
 
 async def test_tool_call_then_final_answer(
@@ -265,7 +327,7 @@ async def test_history_precedes_user_message(
 
     system_content = provider.requests[0].messages[0].content
     assert system_content.startswith("Ты тестовый агент.")
-    assert "Сегодняшняя дата:" in system_content
+    assert "Сегодня:" in system_content
     assert [message.content for message in provider.requests[0].messages][1:] == [
         "старый вопрос",
         "старый ответ",

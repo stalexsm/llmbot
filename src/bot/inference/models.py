@@ -19,6 +19,23 @@ class InferenceRequest:
 
 
 @dataclass(frozen=True)
+class InferenceUsage:
+    """Счётчики токенов и длительности одного вызова модели.
+
+    Заполняется из ответа провайдера, если тот их сообщает; отсутствующие
+    значения остаются ``None``. Единица длительности — наносекунды, как в
+    ответе Ollama ``/api/chat``.
+    """
+
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    total_duration_ns: int | None = None
+    load_duration_ns: int | None = None
+    prompt_eval_duration_ns: int | None = None
+    eval_duration_ns: int | None = None
+
+
+@dataclass(frozen=True)
 class InferenceResponse:
     """A completed inference result."""
 
@@ -26,3 +43,5 @@ class InferenceResponse:
     content: str
     # Вызовы инструментов, запрошенные моделью; пусто — финальный ответ.
     tool_calls: tuple[ToolCall, ...] = ()
+    # Учёт токенов и времени, если провайдер их сообщил.
+    usage: InferenceUsage | None = None

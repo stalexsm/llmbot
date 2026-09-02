@@ -87,12 +87,60 @@ Use case `ProcessUserMessage` и управление чат-сессией. П�
 (`skills/<имя>/SKILL.md`) в промпт не попадает — модель читает файл сама
 через exec.
 
-**Исполнитель команд** — `ExecTool` (`src/bot/agent/exec.py`), единственная
-реализация `Tool`: одна строка shell в рабочем каталоге проекта; таймаут
+**Исполнитель команд** — `ExecTool` (`src/bot/agent/exec.py`), единственный
+исполнитель действий; в цикл он идёт обёрнутым в `MeteredTool` из метрик
+(см. секцию «Метрики токенов»): одна строка shell в рабочем каталоге проекта;
+таймаут
 обрывает команду вместе с группой процессов; вывод (exit code, stdout, stderr)
 суммарно обрезается до лимита символов. Любое завершение — `ToolResult`:
 невалидные аргументы, таймаут и ненулевой exit code — это данные для
 следующего шага модели, а не исключения.
+
+### Метрики токенов — `src/bot/metrics/`
+
+Учёт расхода токенов: обычный диалог оставляет измеримый след. Декоратор
+`MeteredInferenceProvider` реализует Protocol `InferenceProvider` структурно
+и подключается в композиционном корне поверх настоящего адаптера: на каждый
+вызов модели (включая неудачный) он пишет событие `llm_call` — timestamp,
+run id (`RequestId`), модель, номер шага, input/output токены, повторные
+токены, латентность, оценку стоимости. По завершении Запуска агента
+`ApplicationService` закрывает запуск через порт `RunMetrics` — пишется
+агрегированная запись `run` (шаги, суммарные токены, суммарный повторный
+контекст и его доля, длительность, success), суммы которой сходятся с
+`llm_call` того же запуска. Повторные токены — честная прокси-метрика
+повторно передаваемого контекста (данных кэша Ollama не существует):
+общий префикс списков сообщений текущего и предыдущего дошедшего до модели
+запроса того же запуска (`metrics/repeat.py`; промпт сбойного вызова «уже
+виденным» не считается), в символах, откалиброванный точным счётчиком
+промпт-токенов; в события идут только числа, содержимое сообщений не
+записывается. Каждый вызов инструмента учитывает декоратор `MeteredTool`
+на шве `Tool` (в цикл `ExecTool` идёт обёрнутым в него): событие `tool_call`
+несёт класс команды `exec:<класс>` — `git`, `python`, `rg`, `cat`, `ls`
+или `other` (чистый классификатор — `agent/command_class.py`), размеры
+ввода/вывода в символах, длительность, оценку выходных токенов (~4 символа
+на токен) и статус; содержимое команды и её вывода не записывается.
+`RunMetricsCollector` копит вызовы по `RequestId`;
+`MetricsRecorder` дописывает обе записи в append-only JSONL
+(`.data/metrics/events.jsonl`) и дублирует их в structlog — по `request_id`
+лог коррелирует с JSONL-строкой по request_id (а при сбое хранилища остаётся единственным следом вызова). События несут только счётчики и
+идентификаторы: содержимое сообщений, команд и ответов модели в метрики
+не попадает; сбой хранилища метрик работу бота не рвёт.
+
+**CLI-dashboard** — `src/bot/report/` (точка входа `uv run python -m bot.report`):
+автономный офлайн-отчёт поверх того же JSONL, вне графа зависимостей бота
+(никаких Settings и секретов не требует). Рендер — чистая функция от событий:
+`events.py` читает JSONL в типизированные записи (битые строки пропускаются,
+отсутствующий файл — пустой отчёт), `aggregate.py` и `timeline.py` — чистая
+агрегация (сводка по всем запускам и пошаговый timeline одного запуска
+по `--task <id>`), `render.py` — отрисовка текста, `cli.py` — только разбор
+аргументов и вывод в stdout.
+
+**Headless-бенчмарк** — `src/bot/benchmark/` (точка входа `uv run python -m
+bot.benchmark`): прогон фиксированного набора из 20 offline-задач напрямую
+через агентный цикл против живого Ollama, без Telegram. Граф собирается
+зеркально композиционному корню (Ollama → `TokenTrackingProvider` →
+`MeteredInferenceProvider` → `AgentLoop`), поэтому метрики bench-запусков
+видны в общем JSONL и CLI-dashboard. Baseline — `docs/benchmark-baseline.md`.
 
 ### Чат-сессии — `src/bot/sessions/`
 
@@ -121,8 +169,9 @@ tool-calls, Pydantic только на границе JSON, таймауты, м
 | `UserMessageRequest` / `UserMessageResponse` | `application/models.py` | маппер Telegram | `ApplicationService` |
 | `InferenceMessage`, `MessageRole` | `domain/messages.py` | домен | все слои |
 | `ToolSpec` / `ToolCall` / `ToolResult` | `domain/tools.py` | домен; заполняет `ExecTool` | `AgentLoop` |
-| `Tool` (Protocol) | `agent/tools.py` | реализует `ExecTool` | `AgentLoop` |
-| `InferenceProvider` (Protocol) | `inference/provider.py` | реализует адаптер Ollama | `AgentLoop` |
+| `Tool` (Protocol) | `agent/tools.py` | реализует `ExecTool`, в цикл идёт обёрнутым в `MeteredTool` | `AgentLoop` |
+| `InferenceProvider` (Protocol) | `inference/provider.py` | реализует адаптер Ollama и декоратор метрик | `AgentLoop` |
+| `RunMetrics` (Protocol) | `metrics/collector.py` | реализует `RunMetricsCollector` | `ApplicationService` |
 | `AgentProgress` (Protocol) | `agent/progress.py` | реализует `NullProgress` (заглушка: выполнения команд в чат не выводятся) | `ExecTool` |
 | `ApplicationError` и подтипы | `application/errors.py` | кидают нижние слои | Telegram-слой |
 
@@ -157,8 +206,9 @@ tool-calls, Pydantic только на границе JSON, таймауты, м
   корне. Введение контейнера не должно требовать изменений
   domain/application-контрактов.
 - Корень — `run()` в `src/bot/main.py`: Settings → httpx-клиент →
-  OllamaInferenceProvider → ExecTool → индекс скиллов + системный промпт →
-  AgentLoop → ChatSessionStore → ApplicationService → Bot/Dispatcher → polling.
+  OllamaInferenceProvider → MeteredInferenceProvider → ExecTool → MeteredTool →
+  индекс скиллов + системный промпт → AgentLoop → ChatSessionStore →
+  ApplicationService → Bot/Dispatcher → polling.
 - Владение жизненным циклом явное: HTTP-клиент и сессия бота закрываются
   в `finally`.
 

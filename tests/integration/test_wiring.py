@@ -24,6 +24,10 @@ from bot.agent.prompts import SYSTEM_PROMPT, build_date_block
 from bot.application.service import ApplicationService
 from bot.domain.ids import ModelId
 from bot.inference.ollama import OllamaInferenceProvider
+from bot.metrics.collector import RunMetricsCollector
+from bot.metrics.provider import MeteredInferenceProvider
+from bot.metrics.recorder import MetricsRecorder
+from bot.metrics.tool import MeteredTool
 from bot.sessions.store import ChatSessionStore
 from bot.telegram.handlers import TelegramHandlers
 from tests.fakes import make_telegram_message
@@ -45,12 +49,18 @@ def make_stack(
         timeout_seconds=1.0,
         logger=logger,
     )
+    metrics_collector = RunMetricsCollector(
+        recorder=MetricsRecorder(directory=tmp_path / "metrics", logger=logger),
+        input_price_per_mtok=0.0,
+        output_price_per_mtok=0.0,
+    )
+    metered = MeteredInferenceProvider(inner=provider, collector=metrics_collector)
     exec_tool = ExecTool(cwd=tmp_path, timeout_seconds=5.0, max_output_chars=4000, logger=logger)
     agent_loop = AgentLoop(
-        inference=provider,
+        inference=metered,
         model=ModelId("qwen3:1.7b"),
         system_prompt=SYSTEM_PROMPT,
-        tools=(exec_tool,),
+        tools=(MeteredTool(inner=exec_tool, collector=metrics_collector),),
         step_limit=step_limit,
         logger=logger,
     )
@@ -59,6 +69,7 @@ def make_stack(
         sessions=ChatSessionStore(directory=tmp_path, logger=logger),
         history_limit=20,
         logger=logger,
+        metrics=metrics_collector,
     )
     return TelegramHandlers(service=service, logger=logger, allowed_chat_ids=frozenset())
 
@@ -98,6 +109,35 @@ async def test_full_pipeline_text_to_reply(
     await handlers.handle_text(message)
 
     assert sent_message(request_mock).text == "Привет из модели"
+
+
+async def test_full_pipeline_writes_llm_call_and_run_metrics(
+    bot: Bot,
+    logger: structlog.stdlib.BoundLogger,
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Обычный диалог оставляет измеримый след: llm_call + агрегированный run."""
+    handlers = make_stack(logger, ok_handler, tmp_path)
+    request_mock = progress_mock(bot, monkeypatch)
+
+    await handlers.handle_text(make_telegram_message("Привет").as_(bot))
+
+    assert sent_message(request_mock).text == "Привет из модели"
+    lines = [
+        json.loads(line)
+        for line in (tmp_path / "metrics" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [line["kind"] for line in lines] == ["llm_call", "run"]
+    call, run = lines
+    assert call["step"] == 1
+    assert run["steps"] == 1
+    assert run["success"] is True
+    assert run["request_id"] == call["request_id"]
+    # Ни одно событие не содержит содержимого сообщений и ответов модели.
+    for line in lines:
+        assert "Привет" not in json.dumps(line, ensure_ascii=False)
+        assert "Привет из модели" not in json.dumps(line, ensure_ascii=False)
 
 
 async def test_full_pipeline_second_message_sees_first_exchange(
@@ -190,6 +230,21 @@ async def test_full_pipeline_exec_tool_roundtrip(
     calls = [call.args[1] for call in request_mock.await_args_list]
     assert [type(call) for call in calls] == [SendMessage]
     assert calls[0].text == "Модель увидела вывод команды"
+    # След метрик: llm_call → tool_call → llm_call → агрегированный run.
+    lines = [
+        json.loads(line)
+        for line in (tmp_path / "metrics" / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [line["kind"] for line in lines] == ["llm_call", "tool_call", "llm_call", "run"]
+    tool_line = lines[1]
+    assert tool_line["tool_name"] == "exec:other"
+    assert tool_line["succeeded"] is True
+    assert tool_line["request_id"] == lines[0]["request_id"]
+    assert tool_line["output_tokens"] > 0
+    # Содержимое команды и её вывода в метрики не попадает.
+    tool_dump = json.dumps(tool_line, ensure_ascii=False)
+    assert "echo" not in tool_dump
+    assert "привет из shell" not in tool_dump
 
 
 async def test_full_pipeline_step_limit_returns_honest_stop(
