@@ -4,7 +4,7 @@
 
 **Blocked by:** 01.
 
-**Status:** ready-for-human
+**Status:** done
 
 - [x] Декоратор реализует Protocol `InferenceProvider` и подключается в композиционном корне; слои не нарушены
 - [x] Каждый вызов модели пишет `llm_call` со всеми полями задания (timestamp, run id, модель, токены, латентность, стоимость, шаг)

@@ -4,7 +4,7 @@
 
 **Blocked by:** 02, 03, 04.
 
-**Status:** resolved
+**Status:** done
 
 - [x] Агрегат печатается из живых метрик: все блоки dashboard из задания присутствуют
 - [x] `--task <id>` печатает пошаговый timeline запуска

@@ -1,6 +1,6 @@
 # Spec: Аудит токенов и observability для агента
 
-Status: ready-for-agent
+Status: done
 
 ## Problem Statement
 

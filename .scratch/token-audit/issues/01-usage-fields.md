@@ -4,7 +4,7 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-human
+**Status:** done
 
 - [x] Адаптер парсит usage из консервированного ответа Ollama в доменную модель (юнит-тест)
 - [x] Поля необязательны: ответ без usage обрабатывается как прежде
