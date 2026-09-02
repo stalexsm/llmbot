@@ -69,7 +69,7 @@ async def test_simple_question_is_answered_in_one_step(
     request = provider.requests[0]
     assert request.tools[0].name == "execute_command"
     assert [message.role for message in request.messages] == [MessageRole.SYSTEM, MessageRole.USER]
-    assert "Сегодняшняя дата:" in request.messages[0].content
+    assert "Сегодня:" in request.messages[0].content
 
 
 async def test_tool_outputs_older_than_keep_steps_are_compacted(
@@ -327,7 +327,7 @@ async def test_history_precedes_user_message(
 
     system_content = provider.requests[0].messages[0].content
     assert system_content.startswith("Ты тестовый агент.")
-    assert "Сегодняшняя дата:" in system_content
+    assert "Сегодня:" in system_content
     assert [message.content for message in provider.requests[0].messages][1:] == [
         "старый вопрос",
         "старый ответ",

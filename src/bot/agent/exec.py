@@ -19,6 +19,7 @@ import structlog
 from bot.agent.command_class import command_from_arguments
 from bot.agent.output import clean_output, truncate_middle
 from bot.agent.progress import AgentProgress
+from bot.agent.skills import SKILL_READ_COMMAND
 from bot.domain.ids import RequestId, ToolId
 from bot.domain.tools import ToolCall, ToolParameter, ToolResult, ToolSpec
 
@@ -38,12 +39,12 @@ _SELF_CORRECTION_HINTS: dict[int, str] = {
         "\n\nhint: оболочка не смогла исполнить команду (файл не является программой). "
         "Вероятно, имя команды или её аргументы выдуманы. exec запускает только реальные "
         "утилиты (cat, ls, curl, …); файлы читаются командой cat. Если задача подходит под "
-        "скилл из индекса, начни с команды: cat skills/<имя>/SKILL.md"
+        f"скилл из индекса, начни с команды: {SKILL_READ_COMMAND}"
     ),
     127: (
         "\n\nhint: такой программы нет на машине (command not found). Не выдумывай имена "
         "команд: exec запускает только реальные утилиты (cat, ls, curl, …). Если задача "
-        "подходит под скилл из индекса, начни с команды: cat skills/<имя>/SKILL.md"
+        f"подходит под скилл из индекса, начни с команды: {SKILL_READ_COMMAND}"
     ),
 }
 
@@ -66,7 +67,7 @@ def _self_correction_hint(returncode: int | None, stdout: str = "", stderr: str 
             hint = (
                 "\n\nhint: сервис ответил отказом доступа (403/401): этому API нужен "
                 "платный ключ. Не выдумывай API с ключами — используй бесплатный "
-                "источник без авторизации из файла скилла: cat skills/<имя>/SKILL.md"
+                f"источник без авторизации из файла скилла: {SKILL_READ_COMMAND}"
             )
     return hint
 
@@ -98,15 +99,15 @@ class ExecTool:
         self._spec = ToolSpec(
             name=ToolId("execute_command"),
             description=(
-                "Выполнить одну строку shell в рабочем каталоге проекта; возвращает "
-                "exit code, stdout и stderr. Для задач с живыми данными сначала прочитай "
-                "файл подходящего скилла командой cat skills/<имя>/SKILL.md и следуй ему."
+                "Выполнить одну строку shell в каталоге проекта; возвращает exit_code, "
+                f"stdout и stderr. Для живых данных сначала прочитай файл скилла: "
+                f"{SKILL_READ_COMMAND}."
             ),
             parameters=(
                 ToolParameter(
                     name="command",
                     type="string",
-                    description="Команда для выполнения, одна строка shell",
+                    description="Команда, одна строка shell",
                 ),
             ),
             required=("command",),
