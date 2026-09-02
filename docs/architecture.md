@@ -135,6 +135,13 @@ run id (`RequestId`), модель, номер шага, input/output токен
 по `--task <id>`), `render.py` — отрисовка текста, `cli.py` — только разбор
 аргументов и вывод в stdout.
 
+**Headless-бенчмарк** — `src/bot/benchmark/` (точка входа `uv run python -m
+bot.benchmark`): прогон фиксированного набора из 20 offline-задач напрямую
+через агентный цикл против живого Ollama, без Telegram. Граф собирается
+зеркально композиционному корню (Ollama → `TokenTrackingProvider` →
+`MeteredInferenceProvider` → `AgentLoop`), поэтому метрики bench-запусков
+видны в общем JSONL и CLI-dashboard. Baseline — `docs/benchmark-baseline.md`.
+
 ### Чат-сессии — `src/bot/sessions/`
 
 `ChatSessionStore` — один append-only JSONL-файл на чат

@@ -17,6 +17,7 @@ from bot.benchmark.tasks import BenchmarkTask, TaskKind
 from bot.benchmark.tracker import TokenTrackingProvider
 from bot.domain.ids import RequestId
 from bot.domain.messages import InferenceMessage, MessageRole
+from bot.metrics.collector import RunMetrics
 
 
 @dataclass(frozen=True)
@@ -81,16 +82,23 @@ class BenchmarkSummary:
 
 
 class BenchmarkRunner:
-    """Прогоняет набор задач через агентный цикл и собирает результаты."""
+    """Прогоняет набор задач через агентный цикл и собирает результаты.
+
+    Каждый запуск закрывается через порт ``RunMetrics``: записи ``run``
+    bench-запусков попадают в общий JSONL, и dashboard считает их наравне
+    с обычными запусками.
+    """
 
     def __init__(
         self,
         agent: AgentLoop,
         tracker: TokenTrackingProvider,
+        metrics: RunMetrics,
         logger: structlog.stdlib.BoundLogger,
     ) -> None:
         self._agent = agent
         self._tracker = tracker
+        self._metrics = metrics
         self._logger = logger.bind(component="benchmark_runner")
 
     async def run_task(self, task: BenchmarkTask) -> TaskResult:
@@ -114,7 +122,7 @@ class BenchmarkRunner:
             error = f"{type(exc).__name__}: {exc}"
             self._logger.warning("benchmark_task_error", task_id=task.task_id, error=error)
         prompt_tokens, completion_tokens = self._tracker.totals(request_id)
-        return TaskResult(
+        result = TaskResult(
             task_id=task.task_id,
             kind=task.kind,
             success=success,
@@ -125,6 +133,9 @@ class BenchmarkRunner:
             duration_ms=int((time.monotonic() - started_at) * 1000),
             error=error,
         )
+        # Закрыть запуск агрегированной записью run — как в обычном чат-потоке.
+        self._metrics.finish_run(request_id, success=result.success)
+        return result
 
     async def run_all(self, tasks: Sequence[BenchmarkTask]) -> BenchmarkSummary:
         """Прогнать задачи последовательно: параллель исказила бы измерения."""

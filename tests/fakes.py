@@ -62,6 +62,11 @@ class ScriptedInferenceProvider:
         return self._responses.pop(0)
 
 
+def tool_call_arguments(command: str) -> str:
+    """JSON-аргументы вызова exec-инструмента для скриптованных ответов."""
+    return json.dumps({"command": command}, ensure_ascii=False)
+
+
 def exec_call_response(*commands: str) -> InferenceResponse:
     """Ответ модели, запрашивающий инструмент exec с указанными командами."""
     return InferenceResponse(

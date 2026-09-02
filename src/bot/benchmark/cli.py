@@ -10,7 +10,6 @@ import asyncio
 import contextlib
 import logging
 import sys
-from pathlib import Path
 
 import httpx
 import structlog
@@ -21,7 +20,12 @@ from bot.agent.prompts import build_system_prompt
 from bot.agent.skills import load_skills, render_skills_index
 from bot.benchmark.runner import BenchmarkRunner, BenchmarkSummary
 from bot.benchmark.settings import BenchmarkSettings
-from bot.benchmark.tasks import TaskKind, benchmark_tasks, task_kind_counts
+from bot.benchmark.tasks import (
+    EXPECTED_KIND_COUNTS,
+    REPO_ROOT,
+    benchmark_tasks,
+    task_kind_counts,
+)
 from bot.benchmark.tracker import TokenTrackingProvider
 from bot.config.settings import Settings
 from bot.domain.ids import ModelId
@@ -30,15 +34,6 @@ from bot.metrics.collector import RunMetricsCollector
 from bot.metrics.provider import MeteredInferenceProvider
 from bot.metrics.recorder import METRICS_DIRECTORY, MetricsRecorder
 from bot.metrics.tool import MeteredTool
-
-# Целевой состав набора: 5 «из знаний», 5 одношаговых exec,
-# 6 многошаговых по репозиторию, 4 смешанных.
-_EXPECTED_COUNTS = {
-    TaskKind.KNOWLEDGE: 5,
-    TaskKind.EXEC: 5,
-    TaskKind.REPO: 6,
-    TaskKind.MIXED: 4,
-}
 
 
 def configure_logging() -> structlog.stdlib.BoundLogger:
@@ -60,7 +55,7 @@ async def run_benchmark(settings: Settings, logger: structlog.stdlib.BoundLogger
     """Собрать граф агента без Telegram и прогнать набор задач. Код возврата — 0/1."""
     tasks = benchmark_tasks()
     counts = task_kind_counts(tasks)
-    if counts != _EXPECTED_COUNTS:
+    if counts != EXPECTED_KIND_COUNTS:
         logger.error("benchmark_task_set_mismatch", counts={str(k): v for k, v in counts.items()})
         return 1
 
@@ -75,7 +70,9 @@ async def run_benchmark(settings: Settings, logger: structlog.stdlib.BoundLogger
         )
         tracker = TokenTrackingProvider(inner=ollama)
         collector = RunMetricsCollector(
-            recorder=MetricsRecorder(directory=METRICS_DIRECTORY, logger=logger),
+            # Якорим к корню репозитория: прогон из другого cwd не должен
+            # раскидывать метрики и рабочий каталог агента по разным местам.
+            recorder=MetricsRecorder(directory=REPO_ROOT / METRICS_DIRECTORY, logger=logger),
             input_price_per_mtok=settings.metrics_input_price_per_mtok,
             output_price_per_mtok=settings.metrics_output_price_per_mtok,
         )
@@ -83,7 +80,7 @@ async def run_benchmark(settings: Settings, logger: structlog.stdlib.BoundLogger
         skills = load_skills(settings.agent_skills_directory, logger)
         exec_tool = MeteredTool(
             inner=ExecTool(
-                cwd=Path.cwd(),
+                cwd=REPO_ROOT,
                 timeout_seconds=settings.agent_exec_timeout_seconds,
                 max_output_chars=settings.agent_exec_max_output_chars,
                 logger=logger,
@@ -98,7 +95,7 @@ async def run_benchmark(settings: Settings, logger: structlog.stdlib.BoundLogger
             step_limit=settings.agent_max_steps,
             logger=logger,
         )
-        runner = BenchmarkRunner(agent=agent, tracker=tracker, logger=logger)
+        runner = BenchmarkRunner(agent=agent, tracker=tracker, metrics=collector, logger=logger)
         summary = await runner.run_all(tasks)
     finally:
         await http_client.aclose()

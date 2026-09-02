@@ -8,13 +8,20 @@ import structlog.stdlib
 
 from bot.agent.loop import AgentLoop
 from bot.benchmark.runner import BenchmarkRunner
-from bot.benchmark.tasks import BenchmarkTask, Checker, TaskKind, tool_call_arguments
+from bot.benchmark.tasks import BenchmarkTask, Checker, TaskKind
 from bot.benchmark.tracker import TokenTrackingProvider
 from bot.domain.ids import ModelId, RequestId, ToolId
 from bot.domain.tools import ToolCall
 from bot.inference.models import InferenceResponse, InferenceUsage
 from bot.inference.provider import InferenceProvider
-from tests.fakes import FailingInferenceProvider, ScriptedInferenceProvider, final_response
+from bot.metrics.collector import RunMetrics
+from tests.fakes import (
+    FailingInferenceProvider,
+    ScriptedInferenceProvider,
+    SpyMetricsCollector,
+    final_response,
+    tool_call_arguments,
+)
 
 STEP_LIMIT = 5
 
@@ -34,6 +41,7 @@ def make_task(
 def make_runner(
     logger: structlog.stdlib.BoundLogger,
     provider: InferenceProvider,
+    metrics: RunMetrics | None = None,
 ) -> BenchmarkRunner:
     tracker = TokenTrackingProvider(inner=provider)
     loop = AgentLoop(
@@ -44,7 +52,12 @@ def make_runner(
         step_limit=STEP_LIMIT,
         logger=logger,
     )
-    return BenchmarkRunner(agent=loop, tracker=tracker, logger=logger)
+    return BenchmarkRunner(
+        agent=loop,
+        tracker=tracker,
+        metrics=metrics if metrics is not None else SpyMetricsCollector(),
+        logger=logger,
+    )
 
 
 def tool_call_step() -> InferenceResponse:
@@ -161,3 +174,15 @@ async def test_request_id_is_derived_from_task_id(logger: structlog.stdlib.Bound
     await runner.run_task(make_task("custom-id"))
 
     assert provider.requests[0].request_id == "bench-custom-id"
+
+
+async def test_run_finishes_metrics_run_record(
+    logger: structlog.stdlib.BoundLogger,
+) -> None:
+    spy = SpyMetricsCollector()
+    provider = ScriptedInferenceProvider([final_response("готово")])
+    runner = make_runner(logger, provider, metrics=spy)
+
+    await runner.run_task(make_task("t01"))
+
+    assert spy.finished == [(RequestId("bench-t01"), True)]

@@ -10,14 +10,14 @@
 от каждой правки строк.
 """
 
-import json
 import subprocess
+import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-_REPO_ROOT = Path(__file__).resolve().parents[3]
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
 Checker = Callable[[str], bool]
 
@@ -29,6 +29,18 @@ class TaskKind(StrEnum):
     EXEC = "exec"
     REPO = "repo"
     MIXED = "mixed"
+
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+# Целевой состав набора: 5 «из знаний», 5 одношаговых exec,
+# 6 многошаговых по репозиторию, 4 смешанных (инвариант спеки).
+EXPECTED_KIND_COUNTS: dict[TaskKind, int] = {
+    TaskKind.KNOWLEDGE: 5,
+    TaskKind.EXEC: 5,
+    TaskKind.REPO: 6,
+    TaskKind.MIXED: 4,
+}
 
 
 @dataclass(frozen=True)
@@ -81,6 +93,17 @@ def _mentions_line_count(path: Path) -> Checker:
     return check
 
 
+def _mentions_project_version() -> Checker:
+    """Ответ должен называть версию проекта из pyproject.toml."""
+
+    def check(answer: str) -> bool:
+        with open(REPO_ROOT / "pyproject.toml", "rb") as file:
+            version = tomllib.load(file)["project"]["version"]
+        return version in answer
+
+    return check
+
+
 def _mentions_sum_of_line_counts(*paths: Path) -> Checker:
     """Ответ должен называть сумму строк указанных файлов."""
 
@@ -92,8 +115,16 @@ def _mentions_sum_of_line_counts(*paths: Path) -> Checker:
 
 
 def _mentions_directory_names(directory: Path) -> Checker:
-    """Ответ должен перечислить все имена каталогов в указанном каталоге."""
-    names = sorted(entry.name for entry in directory.iterdir() if entry.is_dir())
+    """Ответ должен перечислить все имена каталогов в указанном каталоге.
+
+    Артефакты сборки вроде ``__pycache__`` не считаются: их наличие зависит
+    от режима запуска, а не от репозитория — воспроизводимость важнее.
+    """
+    names = sorted(
+        entry.name
+        for entry in directory.iterdir()
+        if entry.is_dir() and not entry.name.endswith((".pycache",)) and entry.name != "__pycache__"
+    )
     return _contains_all(*names)
 
 
@@ -103,7 +134,7 @@ def _mentions_head_commit() -> Checker:
     def check(answer: str) -> bool:
         head = subprocess.run(
             ["git", "rev-parse", "--short", "HEAD"],
-            cwd=_REPO_ROOT,
+            cwd=REPO_ROOT,
             capture_output=True,
             text=True,
             check=True,
@@ -170,13 +201,13 @@ _TASKS: tuple[BenchmarkTask, ...] = (
         task_id="e03",
         kind=TaskKind.EXEC,
         prompt="Посчитай число строк в файле pyproject.toml командой wc -l и назови число.",
-        checker=_mentions_line_count(_REPO_ROOT / "pyproject.toml"),
+        checker=_mentions_line_count(REPO_ROOT / "pyproject.toml"),
     ),
     BenchmarkTask(
         task_id="e04",
         kind=TaskKind.EXEC,
         prompt="Какая версия проекта указана в pyproject.toml в поле version? Найди и назови.",
-        checker=_contains_any("0.1.0"),
+        checker=_mentions_project_version(),
     ),
     BenchmarkTask(
         task_id="e05",
@@ -192,7 +223,7 @@ _TASKS: tuple[BenchmarkTask, ...] = (
         task_id="r01",
         kind=TaskKind.REPO,
         prompt="Перечисли все подкаталоги каталога src/bot и назови их имена.",
-        checker=_mentions_directory_names(_REPO_ROOT / "src" / "bot"),
+        checker=_mentions_directory_names(REPO_ROOT / "src" / "bot"),
     ),
     BenchmarkTask(
         task_id="r02",
@@ -216,7 +247,7 @@ _TASKS: tuple[BenchmarkTask, ...] = (
         task_id="r04",
         kind=TaskKind.REPO,
         prompt="Посчитай число строк в файле src/bot/agent/exec.py и назови число.",
-        checker=_mentions_line_count(_REPO_ROOT / "src" / "bot" / "agent" / "exec.py"),
+        checker=_mentions_line_count(REPO_ROOT / "src" / "bot" / "agent" / "exec.py"),
     ),
     BenchmarkTask(
         task_id="r05",
@@ -255,8 +286,8 @@ _TASKS: tuple[BenchmarkTask, ...] = (
             "src/bot/domain/ids.py (wc -l по обоим) и назови одно итоговое число."
         ),
         checker=_mentions_sum_of_line_counts(
-            _REPO_ROOT / "src" / "bot" / "main.py",
-            _REPO_ROOT / "src" / "bot" / "domain" / "ids.py",
+            REPO_ROOT / "src" / "bot" / "main.py",
+            REPO_ROOT / "src" / "bot" / "domain" / "ids.py",
         ),
     ),
     BenchmarkTask(
@@ -285,8 +316,3 @@ def task_kind_counts(tasks: tuple[BenchmarkTask, ...]) -> dict[TaskKind, int]:
     for task in tasks:
         counts[task.kind] += 1
     return counts
-
-
-def tool_call_arguments(command: str) -> str:
-    """JSON-аргументы вызова exec-инструмента (для скриптованных ответов в тестах)."""
-    return json.dumps({"command": command}, ensure_ascii=False)
