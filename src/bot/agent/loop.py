@@ -234,8 +234,8 @@ class AgentLoop:
         """Схлопнуть tool-выводы шагов, вышедших из окна последних K шагов.
 
         Коснулся только рабочего множества запуска (список ``messages``):
-        записанный обмен и чат-сессия не меняются. Идемпотентно — сигнатура
-        уже схлопнутого сообщения не перечитывается.
+        записанный обмен и чат-сессия не меняются. Перезаписи идемпотентны:
+        старый шаг даёт ту же сигнатуру при каждом пересчёте.
         """
         if self._keep_steps <= 0 or len(step_tools) <= self._keep_steps:
             return
@@ -244,9 +244,11 @@ class AgentLoop:
                 message = messages[index]
                 if message.role is not MessageRole.TOOL:
                     continue
-                command = command_from_arguments(call.arguments) or call.arguments
+                command = command_from_arguments(call.arguments)
+                # Невалидные аргументи не тащат сырой JSON в сигнатуру.
+                label = command if command is not None else str(call.name)
                 status = "ok" if succeeded else "ошибка"
-                messages[index] = replace(message, content=f"{command} → {status}")
+                messages[index] = replace(message, content=f"{label} → {status}")
 
     async def _execute(
         self,
