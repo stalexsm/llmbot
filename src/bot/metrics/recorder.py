@@ -14,6 +14,9 @@ import structlog
 from bot.metrics.models import MetricRecord, strip_log_fields
 
 EVENTS_FILENAME = "events.jsonl"
+# Единый источник пути: бота (main.py) и CLI-dashboard (report) читают метрики
+# из одного каталога — расхождение путей дало бы тихий нулевой отчёт.
+METRICS_DIRECTORY = Path(".data/metrics")
 
 
 class MetricsRecorder:

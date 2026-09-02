@@ -134,6 +134,16 @@ uv sync                 # создать venv и установить завис
 uv run python -m bot.main
 ```
 
+### Отчёт по токенам
+
+Текстовый dashboard по расходу токенов из `.data/metrics/events.jsonl`:
+
+```bash
+uv run python -m bot.report                  # агрегат: токены, стоимость, средний запуск,
+                                             # доля повторного контекста, топ команд
+uv run python -m bot.report --task <req_id>  # пошаговый timeline одного запуска агента
+```
+
 ## Проверки
 
 ```bash
@@ -171,6 +181,19 @@ src/bot/
 │   ├── models.py        # InferenceRequest / InferenceResponse
 │   ├── provider.py      # Protocol InferenceProvider
 │   └── ollama.py        # адаптер Ollama (httpx + Pydantic на границе JSON)
+├── metrics/
+│   ├── models.py        # типизированные записи: llm_call / tool_call / run
+│   ├── collector.py     # RunMetricsCollector: вызовы по запускам, закрытие run
+│   ├── provider.py      # MeteredInferenceProvider: llm_call на каждый вызов модели
+│   ├── tool.py          # MeteredTool: tool_call на каждый вызов exec
+│   ├── repeat.py        # прокси-метрика повторно передаваемого контекста
+│   └── recorder.py      # MetricsRecorder: append-only JSONL + structlog-дубль
+├── report/
+│   ├── events.py        # чтение JSONL-метрик (битые строки пропускаются)
+│   ├── aggregate.py     # агрегат dashboard — чистая функция от событий
+│   ├── timeline.py      # timeline одного запуска — чистая функция от событий
+│   ├── render.py        # рендер агрегата и timeline в текст
+│   └── cli.py           # точка входа python -m bot.report (--task <id>)
 └── telegram/
     ├── handlers.py      # aiogram-обработчики (/start, /new, текст)
     ├── mapper.py        # aiogram Message → UserMessageRequest
@@ -178,6 +201,7 @@ src/bot/
 
 skills/weather/SKILL.md  # первый скилл: погода через wttr.in
 .data/chats/             # чат-сессии <chat_id>.jsonl (исключён из git)
+.data/metrics/           # метрики токенов events.jsonl (исключён из git)
 tests/
 ├── unit/                # сервис, цикл, exec, скиллы, сессии, адаптер Ollama, хендлеры
 └── integration/         # полный цикл Telegram → приложение → агент (без сети)

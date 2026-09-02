@@ -26,7 +26,7 @@ from bot.domain.ids import ModelId
 from bot.inference.ollama import OllamaInferenceProvider
 from bot.metrics.collector import RunMetricsCollector
 from bot.metrics.provider import MeteredInferenceProvider
-from bot.metrics.recorder import MetricsRecorder
+from bot.metrics.recorder import METRICS_DIRECTORY, MetricsRecorder
 from bot.metrics.tool import MeteredTool
 from bot.sessions.store import ChatSessionStore
 from bot.telegram.handlers import TelegramHandlers
@@ -77,7 +77,7 @@ async def run() -> None:
         # Учёт токенов: декоратор на шве InferenceProvider пишет llm_call на
         # каждый вызов модели; сервис закрывает запуск записью run.
         metrics_collector = RunMetricsCollector(
-            recorder=MetricsRecorder(directory=Path(".data/metrics"), logger=logger),
+            recorder=MetricsRecorder(directory=METRICS_DIRECTORY, logger=logger),
             input_price_per_mtok=settings.metrics_input_price_per_mtok,
             output_price_per_mtok=settings.metrics_output_price_per_mtok,
         )
