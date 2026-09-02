@@ -205,9 +205,36 @@ async def test_long_output_is_trimmed_to_char_limit(
         REQUEST_ID, exec_call("python3 -c \"print('a' * 5000)\""), NullProgress()
     )
 
-    assert len(result.content) <= 515  # лимит плюс маркер обрезки
-    assert "вывод обрезан" in result.content
+    assert len(result.content) <= 500  # прежний лимит символов соблюдён
+    assert result.content.startswith("exit_code: 0")  # голова вывода сохранена
+    assert "stderr:" in result.content  # хвост вывода сохранён
+    assert "пропущено" in result.content  # маркер обрезки понятен модели
     assert result.content.count("a") < 5000
+
+
+NOISY_SCRIPT = (
+    "import sys\n"
+    "for frame in ('\\x1b[32mскачивание\\x1b[0m 10%', '⠋ 50%', '\\x1b[1m⠹ 100%\\x1b[0m'):\n"
+    "    sys.stdout.write(frame + '\\r')\n"
+    "sys.stdout.write('\\r\\nГотово\\n')\n"
+)
+
+
+async def test_noisy_real_command_output_is_cleaned(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    """Реальная команда с шумным выводом: модель видит финальное состояние."""
+    (tmp_path / "noisy.py").write_text(NOISY_SCRIPT, encoding="utf-8")
+    tool = make_tool(tmp_path, logger)
+
+    result = await tool.execute(REQUEST_ID, exec_call("python3 noisy.py"), NullProgress())
+
+    assert result.succeeded is True
+    assert "\x1b" not in result.content  # ANSI-коды сняты
+    assert "\r" not in result.content  # кадры прогресса схлопнуты
+    assert "10%" not in result.content and "⠋" not in result.content  # промежуточные кадры
+    assert "100%" in result.content  # финальный кадр сохранён
+    assert "Готово" in result.content
 
 
 async def test_invalid_json_arguments_return_error_result(

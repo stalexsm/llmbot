@@ -2,7 +2,9 @@
 
 Одна строка команды, рабочий каталог задаётся при сборке (корень проекта),
 зависшая команда обрывается по таймауту. Модель получает exit code, stdout
-и stderr одним текстом, суммарно обрезанным до лимита символов.
+и stderr одним текстом: ANSI-коды и прогресс-шум сняты, вывод обрезан до
+лимита символов с сохранением головы и хвоста — итоги и ошибки в конце
+не теряются.
 """
 
 import asyncio
@@ -15,11 +17,10 @@ from pathlib import Path
 import structlog
 
 from bot.agent.command_class import command_from_arguments
+from bot.agent.output import clean_output, truncate_middle
 from bot.agent.progress import AgentProgress
 from bot.domain.ids import RequestId, ToolId
 from bot.domain.tools import ToolCall, ToolParameter, ToolResult, ToolSpec
-
-_TRUNCATION_MARKER = "\n…[вывод обрезан]"
 
 # Дренаж потоков после убийства группы: обычно мгновенный (EOF приходит
 # сразу), но потомок, сбежавший из группы через новую сессию, может держать
@@ -70,12 +71,14 @@ def _self_correction_hint(returncode: int | None, stdout: str = "", stderr: str 
     return hint
 
 
-def _truncate(text: str, limit: int) -> str:
-    """Обрезать текст до лимита, оставив маркер обрезки в пределах лимита."""
-    if len(text) <= limit:
-        return text
-    keep = max(limit - len(_TRUNCATION_MARKER), 0)
-    return text[:keep] + _TRUNCATION_MARKER
+def _decode_and_clean(data: bytes) -> str:
+    """Декодировать поток команды и снять шум до того, как его увидит модель."""
+    return clean_output(data.decode(errors="replace"))
+
+
+def _limited_result(content: str, succeeded: bool, max_output_chars: int) -> ToolResult:
+    """ToolResult с обрезкой контента до лимита: голова и хвост, середина — маркер."""
+    return ToolResult(content=truncate_middle(content, max_output_chars), succeeded=succeeded)
 
 
 class ExecTool:
@@ -118,13 +121,11 @@ class ExecTool:
     ) -> ToolResult:
         command = command_from_arguments(call.arguments)
         if command is None:
-            return ToolResult(
-                content=_truncate(
-                    "invalid tool arguments: expected JSON object with a string field "
-                    f'"command", got: {call.arguments}',
-                    self._max_output_chars,
-                ),
+            return _limited_result(
+                "invalid tool arguments: expected JSON object with a string field "
+                f'"command", got: {call.arguments}',
                 succeeded=False,
+                max_output_chars=self._max_output_chars,
             )
 
         await self._report_started(progress, command)
@@ -180,24 +181,19 @@ class ExecTool:
         if timed_out:
             content = (
                 f"exit_code: timeout (limit {self._timeout_seconds} s)\n"
-                f"stdout:\n{stdout.decode(errors='replace')}\n"
-                f"stderr:\n{stderr.decode(errors='replace')}"
+                f"stdout:\n{_decode_and_clean(stdout)}\n"
+                f"stderr:\n{_decode_and_clean(stderr)}"
             )
-            return ToolResult(content=_truncate(content, self._max_output_chars), succeeded=False)
+            return _limited_result(content, False, self._max_output_chars)
+        stdout_text = _decode_and_clean(stdout)
+        stderr_text = _decode_and_clean(stderr)
         output_text = (
             f"exit_code: {process.returncode}\n"
-            f"stdout:\n{stdout.decode(errors='replace')}\n"
-            f"stderr:\n{stderr.decode(errors='replace')}"
-            + _self_correction_hint(
-                process.returncode,
-                stdout.decode(errors="replace"),
-                stderr.decode(errors="replace"),
-            )
+            f"stdout:\n{stdout_text}\n"
+            f"stderr:\n{stderr_text}"
+            + _self_correction_hint(process.returncode, stdout_text, stderr_text)
         )
-        return ToolResult(
-            content=_truncate(output_text, self._max_output_chars),
-            succeeded=process.returncode == 0,
-        )
+        return _limited_result(output_text, process.returncode == 0, self._max_output_chars)
 
     async def _kill(self, process: asyncio.subprocess.Process) -> None:
         """Убить процесс (и его группу), чтобы зависшая команда не пережила таймаут."""

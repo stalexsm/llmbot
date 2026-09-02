@@ -17,7 +17,10 @@
   цикла (`AGENT_MAX_STEPS`, 10), окно истории чат-сессии
   (`AGENT_HISTORY_MAX_MESSAGES`, 20), таймаут команды exec
   (`AGENT_EXEC_TIMEOUT_SECONDS`, 60), обрезка вывода команды
-  (`AGENT_EXEC_MAX_OUTPUT_CHARS`, 4000), каталог скиллов
+  (`AGENT_EXEC_MAX_OUTPUT_CHARS`, 4000; вывод перед обрезкой чистится
+  от ANSI-кодов и прогресс-шума, при превышении лимита сохраняются голова
+  и хвост, середина схлопывается маркером с числом пропущенных символов),
+  каталог скиллов
   (`AGENT_SKILLS_DIRECTORY`, `skills`), allowlist чатов
   (`TELEGRAM_ALLOWED_CHAT_IDS`, пусто — бот отвечает всем).
 - Режим размышлений модели (`OLLAMA_THINK`, по умолчанию `false`) включает
