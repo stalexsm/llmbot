@@ -55,7 +55,8 @@ class Settings(BaseSettings):
 
     ollama_timeout_seconds: float = 120.0
     telegram_timeout_seconds: float = 30.0
-    embed_timeout_seconds: float = 120.0
+    # Таймаут запросов к /api/embed (OLLAMA_EMBED_TIMEOUT_SECONDS).
+    ollama_embed_timeout_seconds: float = 120.0
 
     # Агентный цикл: лимит шагов и ограничения инструмента exec.
     agent_max_steps: int = Field(default=10, ge=1)

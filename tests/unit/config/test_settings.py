@@ -144,3 +144,14 @@ def test_rag_similarity_out_of_range_fails_fast(monkeypatch: MonkeyPatch) -> Non
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+
+def test_embed_timeout_from_env(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.delenv("OLLAMA_EMBED_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.delenv("OLLAMA_EMBED_MODEL", raising=False)
+
+    assert Settings(_env_file=None).ollama_embed_timeout_seconds == 120.0
+
+    monkeypatch.setenv("OLLAMA_EMBED_TIMEOUT_SECONDS", "30")
+    assert Settings(_env_file=None).ollama_embed_timeout_seconds == 30.0

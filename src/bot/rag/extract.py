@@ -9,14 +9,22 @@
 from pathlib import Path
 
 from bot.application.errors import EmptyDocumentError, UnsupportedDocumentError
+from bot.rag.models import DocumentKind
 
 # .md — тот же простой текст: заголовки учитывает структурный чанкинг.
-_PLAIN_TEXT_SUFFIXES = frozenset({".txt", ".md"})
+_SUFFIX_KINDS: dict[str, DocumentKind] = {
+    ".txt": DocumentKind.TXT,
+    ".md": DocumentKind.MD,
+}
 
 
-def document_kind(name: str) -> str:
-    """Тип документа: расширение имени без точки, в нижнем регистре."""
-    return Path(name).suffix.lower().lstrip(".")
+def document_kind(name: str) -> DocumentKind:
+    """Тип документа по расширению имени; неизвестное расширение — ошибка."""
+    kind = _SUFFIX_KINDS.get(Path(name).suffix.lower())
+    if kind is None:
+        suffix = Path(name).suffix.lower()
+        raise UnsupportedDocumentError(f"Document format is not supported: {suffix or '<none>'}")
+    return kind
 
 
 def extract_text(name: str, content: bytes) -> str:
@@ -25,9 +33,7 @@ def extract_text(name: str, content: bytes) -> str:
     Неподдерживаемое расширение и не-текстовое содержимое —
     ``UnsupportedDocumentError``; файл без текста — ``EmptyDocumentError``.
     """
-    suffix = Path(name).suffix.lower()
-    if suffix not in _PLAIN_TEXT_SUFFIXES:
-        raise UnsupportedDocumentError(f"Document format is not supported: {suffix or '<none>'}")
+    document_kind(name)  # валидация формата: тоже UnsupportedDocumentError
     try:
         text = content.decode("utf-8")
     except UnicodeDecodeError as exc:

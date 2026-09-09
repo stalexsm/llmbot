@@ -4,6 +4,7 @@ import pytest
 
 from bot.application.errors import EmptyDocumentError, UnsupportedDocumentError
 from bot.rag.extract import document_kind, extract_text
+from bot.rag.models import DocumentKind
 
 
 def test_txt_is_decoded() -> None:
@@ -40,6 +41,11 @@ def test_empty_document_is_rejected(content: bytes) -> None:
 
 
 def test_kind_is_lowercase_extension_without_dot() -> None:
-    assert document_kind("Report.TXT") == "txt"
-    assert document_kind("guide.Pdf") == "pdf"
-    assert document_kind("noextension") == ""
+    assert document_kind("Report.TXT") == DocumentKind.TXT
+    assert document_kind("notes.md") == DocumentKind.MD
+
+
+@pytest.mark.parametrize("name", ["guide.Pdf", "table.docx", "noextension"])
+def test_kind_for_unsupported_extension_is_rejected(name: str) -> None:
+    with pytest.raises(UnsupportedDocumentError):
+        document_kind(name)

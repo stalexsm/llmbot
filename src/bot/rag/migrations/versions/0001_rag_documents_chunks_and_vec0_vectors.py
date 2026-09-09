@@ -9,10 +9,13 @@ Create Date: 2026-09-09 15:11:34.075641
 import sqlalchemy as sa
 from alembic import op
 
-from bot.rag.models import EMBEDDING_DIMENSION
-
 revision: str = "0001"
 down_revision: str | None = None
+
+# Размерность вектора bge-m3 на момент создания ревизии. Миграция —
+# застывший снимок: намеренно без импорта из bot.rag.models, чтобы
+# смена константы не переписывала DDL уже применённых схем.
+_EMBEDDING_DIMENSION = 1024
 
 
 def upgrade() -> None:
@@ -55,7 +58,7 @@ def upgrade() -> None:
     op.execute(
         "CREATE VIRTUAL TABLE chunk_vectors USING vec0("
         "chunk_id INTEGER PRIMARY KEY, "
-        f"embedding FLOAT[{EMBEDDING_DIMENSION}] distance_metric=cosine)"
+        f"embedding FLOAT[{_EMBEDDING_DIMENSION}] distance_metric=cosine)"
     )
 
     # ### end Alembic commands ###

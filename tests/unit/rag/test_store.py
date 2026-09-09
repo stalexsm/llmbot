@@ -11,7 +11,7 @@ import structlog.stdlib
 from bot.application.errors import RagStorageError
 from bot.domain.ids import TelegramUserId
 from bot.rag.migrations import apply_migrations
-from bot.rag.models import EMBEDDING_DIMENSION, Chunk, SearchHit
+from bot.rag.models import EMBEDDING_DIMENSION, Chunk, DocumentKind, SearchHit
 from bot.rag.store import RagStore
 
 OWNER_A = TelegramUserId(1)
@@ -57,7 +57,7 @@ def test_replace_document_returns_document_info(
     info = store.replace_document(
         OWNER_A,
         "rules.txt",
-        "txt",
+        DocumentKind.TXT,
         [Chunk(position=0, text="текст чанка")],
         [unit_vector(0)],
     )
@@ -65,7 +65,7 @@ def test_replace_document_returns_document_info(
     assert info.id >= 1
     assert info.owner_id == OWNER_A
     assert info.name == "rules.txt"
-    assert info.kind == "txt"
+    assert info.kind == DocumentKind.TXT
     datetime.fromisoformat(info.created_at.replace("Z", "+00:00"))  # parseable ISO timestamp
 
 
@@ -76,7 +76,7 @@ def test_search_finds_indexed_chunk_with_source(
     store.replace_document(
         OWNER_A,
         "rules.txt",
-        "txt",
+        DocumentKind.TXT,
         [Chunk(position=0, text="сколько дней отпуска"), Chunk(position=1, text="погода")],
         [unit_vector(0), unit_vector(1)],
     )
@@ -109,7 +109,7 @@ def test_same_name_replaces_document_atomically(
     store.replace_document(
         OWNER_A,
         "rules.txt",
-        "txt",
+        DocumentKind.TXT,
         [Chunk(position=index, text=f"старая версия {index}") for index in range(3)],
         [unit_vector(index) for index in range(3)],
     )
@@ -117,7 +117,7 @@ def test_same_name_replaces_document_atomically(
     store.replace_document(
         OWNER_A,
         "rules.txt",
-        "txt",
+        DocumentKind.TXT,
         [Chunk(position=index, text=f"новая версия {index}") for index in range(2)],
         [unit_vector(index) for index in range(2)],
     )
@@ -140,14 +140,14 @@ def test_owner_corpora_are_isolated(tmp_path: Path, logger: structlog.stdlib.Bou
     store.replace_document(
         OWNER_A,
         "rules.txt",
-        "txt",
+        DocumentKind.TXT,
         [Chunk(position=0, text="документ владельца A")],
         [unit_vector(0)],
     )
     store.replace_document(
         OWNER_B,
         "rules.txt",
-        "txt",
+        DocumentKind.TXT,
         [Chunk(position=0, text="документ владельца B")],
         [unit_vector(1)],
     )
@@ -181,7 +181,7 @@ def test_search_returns_top_k_ordered_by_similarity(
     store.replace_document(
         OWNER_A,
         "rules.txt",
-        "txt",
+        DocumentKind.TXT,
         [Chunk(position=0, text="точное совпадение"), Chunk(position=1, text="частичное")],
         [unit_vector(0), diagonal],
     )
@@ -205,7 +205,7 @@ def test_below_threshold_returns_nothing(
     store.replace_document(
         OWNER_A,
         "rules.txt",
-        "txt",
+        DocumentKind.TXT,
         [Chunk(position=0, text="отпуск")],
         [unit_vector(0)],
     )
@@ -251,7 +251,11 @@ def test_corrupt_database_maps_to_application_error(
 
     with pytest.raises(RagStorageError):
         store.replace_document(
-            OWNER_A, "rules.txt", "txt", [Chunk(position=0, text="текст")], [unit_vector(0)]
+            OWNER_A,
+            "rules.txt",
+            DocumentKind.TXT,
+            [Chunk(position=0, text="текст")],
+            [unit_vector(0)],
         )
     with pytest.raises(RagStorageError):
         store.search(OWNER_A, unit_vector(0), top_k=5, overfetch=4, min_similarity=0.0)
@@ -266,7 +270,11 @@ def test_unopenable_database_maps_to_application_error(
 
     with pytest.raises(RagStorageError):
         store.replace_document(
-            OWNER_A, "rules.txt", "txt", [Chunk(position=0, text="текст")], [unit_vector(0)]
+            OWNER_A,
+            "rules.txt",
+            DocumentKind.TXT,
+            [Chunk(position=0, text="текст")],
+            [unit_vector(0)],
         )
     with pytest.raises(RagStorageError):
         store.search(OWNER_A, unit_vector(0), top_k=5, overfetch=4, min_similarity=0.0)
@@ -281,7 +289,7 @@ def test_wrong_dimension_vector_is_rejected(
         store.replace_document(
             OWNER_A,
             "rules.txt",
-            "txt",
+            DocumentKind.TXT,
             [Chunk(position=0, text="текст")],
             [[1.0, 2.0, 3.0]],
         )

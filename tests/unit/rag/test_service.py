@@ -14,6 +14,7 @@ from bot.application.errors import (
 from bot.domain.ids import ModelId, RequestId, TelegramUserId
 from bot.inference.embeddings import EmbeddingRequest, EmbeddingResponse
 from bot.rag.migrations import apply_migrations
+from bot.rag.models import DocumentKind
 from bot.rag.service import RagService
 from bot.rag.store import RagStore
 from tests.fakes import MockEmbeddingProvider
@@ -85,7 +86,7 @@ async def test_index_document_then_search_finds_content(
 
     assert indexed.chunk_count >= 2
     assert indexed.document.name == "handbook.txt"
-    assert indexed.document.kind == "txt"
+    assert indexed.document.kind == DocumentKind.TXT
     assert indexed.document.owner_id == OWNER_A
     hits = await service.search(REQUEST_ID, OWNER_A, "сколько дней отпуска")
 

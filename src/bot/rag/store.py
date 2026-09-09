@@ -22,7 +22,7 @@ import structlog
 
 from bot.application.errors import RagStorageError
 from bot.domain.ids import DocumentId, TelegramUserId
-from bot.rag.models import EMBEDDING_DIMENSION, Chunk, DocumentInfo, SearchHit
+from bot.rag.models import EMBEDDING_DIMENSION, Chunk, DocumentInfo, DocumentKind, SearchHit
 
 # Запас на ожидание блокировки: поиск во время замены должен видеть
 # старый корпус, а не падать по «database is locked».
@@ -49,7 +49,7 @@ class RagStore:
         self,
         owner_id: TelegramUserId,
         name: str,
-        kind: str,
+        kind: DocumentKind,
         chunks: Sequence[Chunk],
         embeddings: Sequence[Sequence[float]],
     ) -> DocumentInfo:
@@ -71,7 +71,7 @@ class RagStore:
                 self._delete_document(connection, owner_key, name)
                 cursor = connection.execute(
                     "INSERT INTO documents (owner_id, name, kind) VALUES (?, ?, ?)",
-                    (owner_key, name, kind),
+                    (owner_key, name, str(kind)),
                 )
                 document_id = DocumentId(_lastrowid(cursor))
                 for chunk, vector in zip(chunks, embeddings, strict=True):

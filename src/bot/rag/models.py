@@ -5,6 +5,7 @@
 """
 
 from dataclasses import dataclass
+from enum import StrEnum
 
 from bot.domain.ids import DocumentId, TelegramUserId
 
@@ -12,6 +13,13 @@ from bot.domain.ids import DocumentId, TelegramUserId
 # vec0 (см. ``bot.rag.schema`` и миграции). Смена модели эмбеддингов с другой
 # размерностью потребует новой ревизии миграции.
 EMBEDDING_DIMENSION = 1024
+
+
+class DocumentKind(StrEnum):
+    """Тип документа: расширение без точки; расширяется парсерами тикета 06."""
+
+    TXT = "txt"
+    MD = "md"
 
 
 @dataclass(frozen=True)
@@ -34,7 +42,7 @@ class DocumentInfo:
     id: DocumentId
     owner_id: TelegramUserId
     name: str
-    kind: str
+    kind: DocumentKind
     created_at: str
 
 
