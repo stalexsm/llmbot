@@ -239,10 +239,14 @@ async def test_full_pipeline_exec_tool_roundtrip(
     tool_message = second_messages[3]
     assert tool_message["tool_name"] == "execute_command"
     assert "привет из shell" in tool_message["content"]
-    # Прогресс шагов в чат не выводится: пользователь видит только финальный ответ.
-    calls = [call.args[1] for call in request_mock.await_args_list]
-    assert [type(call) for call in calls] == [SendMessage]
-    assert calls[0].text == "Модель увидела вывод команды"
+    # Прогресс шагов в чат не выводится: пользователь видит только финальный ответ
+    # (chat action «печатает» — не сообщение и в проверку не попадает).
+    calls = [
+        call.args[1]
+        for call in request_mock.await_args_list
+        if isinstance(call.args[1], SendMessage)
+    ]
+    assert [call.text for call in calls] == ["Модель увидела вывод команды"]
     # След метрик: llm_call → tool_call → llm_call → агрегированный run.
     lines = [
         json.loads(line)

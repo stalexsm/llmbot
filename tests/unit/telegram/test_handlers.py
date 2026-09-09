@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock
 import pytest
 import structlog.stdlib
 from aiogram import Bot
-from aiogram.methods import SendMessage
+from aiogram.enums import ChatAction
+from aiogram.methods import SendChatAction, SendMessage
 from pytest import MonkeyPatch
 
 import bot.telegram.handlers as handlers_module
@@ -166,6 +167,50 @@ async def test_text_message_returns_model_response(
     assert len(provider.requests) == 1
 
 
+def _typing_actions(request_mock: AsyncMock) -> list[SendChatAction]:
+    """Все chat action вызовы, перехваченные моком сессии."""
+    return [
+        call.args[1]
+        for call in request_mock.await_args_list
+        if isinstance(call.args[1], SendChatAction)
+    ]
+
+
+async def test_text_message_shows_typing_while_processing(
+    bot: Bot, logger: structlog.stdlib.BoundLogger, monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    handlers = make_handlers(
+        logger,
+        make_service(logger, MockInferenceProvider(response_content="Ответ модели"), tmp_path),
+    )
+    request_mock = mock_telegram_api(bot, monkeypatch)
+
+    message = make_telegram_message("Привет").as_(bot)
+    await handlers.handle_text(message)
+
+    actions = _typing_actions(request_mock)
+    assert actions, "при получении запроса должен отправляться chat action"
+    assert all(action.action == ChatAction.TYPING for action in actions)
+    calls = [call.args[1] for call in request_mock.await_args_list]
+    assert calls.index(actions[0]) < calls.index(sent_message(request_mock))
+
+
+async def test_typing_action_sent_even_when_inference_fails(
+    bot: Bot, logger: structlog.stdlib.BoundLogger, monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    handlers = make_handlers(
+        logger,
+        make_service(logger, FailingInferenceProvider(InferenceUnavailableError("down")), tmp_path),
+    )
+    request_mock = mock_telegram_api(bot, monkeypatch)
+
+    message = make_telegram_message("Привет").as_(bot)
+    await handlers.handle_text(message)
+
+    assert _typing_actions(request_mock)
+    assert sent_message(request_mock).text == handlers_module._ERROR_TEXT
+
+
 @pytest.mark.parametrize(
     "error",
     [InferenceUnavailableError("down"), InferenceTimeoutError("slow")],
@@ -255,9 +300,12 @@ async def test_command_execution_sends_only_final_answer(
 
     await handlers.handle_text(make_telegram_message("покажи привет").as_(bot))
 
-    calls = [call.args[1] for call in request_mock.await_args_list]
-    assert [type(call) for call in calls] == [SendMessage]
-    assert calls[0].text == "Итог: привет"
+    calls = [
+        call.args[1]
+        for call in request_mock.await_args_list
+        if isinstance(call.args[1], SendMessage)
+    ]
+    assert [call.text for call in calls] == ["Итог: привет"]
 
 
 async def test_step_limit_receives_honest_stop_message(
@@ -274,10 +322,13 @@ async def test_step_limit_receives_honest_stop_message(
 
     await handlers.handle_text(make_telegram_message("зациклись").as_(bot))
 
-    calls = [call.args[1] for call in request_mock.await_args_list]
+    calls = [
+        call.args[1]
+        for call in request_mock.await_args_list
+        if isinstance(call.args[1], SendMessage)
+    ]
     # Прогресс шагов в чат не выводится: единственное сообщение — честная остановка.
-    assert [type(call) for call in calls] == [SendMessage]
-    assert calls[0].text == handlers_module._STEP_LIMIT_TEXT
+    assert [call.text for call in calls] == [handlers_module._STEP_LIMIT_TEXT]
 
 
 # --- Allowlist чатов ---------------------------------------------------------
@@ -337,7 +388,12 @@ async def test_filled_allowlist_listed_chat_works_as_before(
 
     service.process_message.assert_awaited_once()
     service.reset_session.assert_awaited_once_with(TelegramChatId(100))
-    assert [call.args[1].text for call in request_mock.await_args_list] == [
+    sent = [
+        call.args[1]
+        for call in request_mock.await_args_list
+        if isinstance(call.args[1], SendMessage)
+    ]
+    assert [call.text for call in sent] == [
         "Ответ модели",
         handlers_module._NEW_CHAT_TEXT,
     ]
@@ -354,8 +410,11 @@ async def test_long_reply_arrives_as_ordered_parts(
 
     await handlers.handle_text(make_telegram_message("Покажи много текста").as_(bot))
 
-    sent = [call.args[1] for call in request_mock.await_args_list]
-    assert all(type(call) is SendMessage for call in sent)
+    sent = [
+        call.args[1]
+        for call in request_mock.await_args_list
+        if isinstance(call.args[1], SendMessage)
+    ]
     # Разрезы приходятся на границы строк: 285 строк по 14 символов = 3990 в части.
     assert [len(call.text) for call in sent] == [3990, 3990, 420]
     assert "".join(call.text for call in sent) == long_text

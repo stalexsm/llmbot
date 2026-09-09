@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import structlog
 from aiogram import F, Router
+from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import Message
@@ -42,6 +43,10 @@ _START_TEXT = (
 _NEW_CHAT_TEXT = "🆕 Новый чат: история диалога сброшена."
 
 _ERROR_TEXT = "Не удалось получить ответ модели. Попробуйте повторить запрос позже."
+
+# Chat action «печатает» живёт у Telegram около пяти секунд; интервал берём
+# с запасом, чтобы индикатор не пропадал во время долгой обработки запроса.
+_TYPING_INTERVAL_SECONDS = 4.5
 
 _STEP_LIMIT_TEXT = (
     "⏹ Достигнут лимит шагов агента: задача остановлена.\n"
@@ -131,23 +136,51 @@ class TelegramHandlers:
             return
         request = to_user_request(message)
         self._logger.info("message_received", request_id=request.request_id)
+        # «Печатает…» сразу при получении запроса; пока агент обрабатывает —
+        # поддерживается фоновым циклом, гасится после ответа.
+        await self._send_typing(message)
+        typing = asyncio.create_task(self._typing_loop(message))
         try:
-            # Прогресс шагов в чат не выводится: выполняемые команды —
-            # внутренняя кухня агента; цикл использует NullProgress.
-            response = await self._service.process_message(request)
-        except ApplicationError as exc:
-            self._logger.error(
-                "reply_failed",
-                request_id=request.request_id,
-                error=type(exc).__name__,
-                status="error",
-            )
-            await message.answer(_ERROR_TEXT)
+            try:
+                # Прогресс шагов в чат не выводится: выполняемые команды —
+                # внутренняя кухня агента; цикл использует NullProgress.
+                response = await self._service.process_message(request)
+            except ApplicationError as exc:
+                self._logger.error(
+                    "reply_failed",
+                    request_id=request.request_id,
+                    error=type(exc).__name__,
+                    status="error",
+                )
+                await message.answer(_ERROR_TEXT)
+                return
+            text = _STEP_LIMIT_TEXT if response.stopped_by_step_limit else response.text
+            for part in split_long_text(text):
+                await message.answer(part)
+            self._logger.info("reply_sent", request_id=response.request_id, status="success")
+        finally:
+            typing.cancel()
+            await asyncio.gather(typing, return_exceptions=True)
+
+    async def _send_typing(self, message: Message) -> None:
+        """Один chat action «печатает»; сбой Telegram не влияет на ответ."""
+        bot = message.bot
+        if bot is None:
             return
-        text = _STEP_LIMIT_TEXT if response.stopped_by_step_limit else response.text
-        for part in split_long_text(text):
-            await message.answer(part)
-        self._logger.info("reply_sent", request_id=response.request_id, status="success")
+        try:
+            await bot.send_chat_action(chat_id=message.chat.id, action=ChatAction.TYPING)
+        except (TelegramAPIError, OSError) as exc:
+            self._logger.debug(
+                "typing_action_failed",
+                chat_id=message.chat.id,
+                error=type(exc).__name__,
+            )
+
+    async def _typing_loop(self, message: Message) -> None:
+        """Обновлять «печатает…» по кругу, пока задача не отменена хендлером."""
+        while True:
+            await asyncio.sleep(_TYPING_INTERVAL_SECONDS)
+            await self._send_typing(message)
 
     async def handle_document(self, message: Message) -> None:
         """Документ от пользователя: мгновенный ответ, индексация — фоном."""
