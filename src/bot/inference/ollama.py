@@ -77,12 +77,14 @@ class OllamaInferenceProvider:
         timeout_seconds: float,
         logger: structlog.stdlib.BoundLogger,
         think: bool = False,
+        num_ctx: int = 8192,
     ) -> None:
         self._client = client
         self._chat_url = f"{base_url.rstrip('/')}/api/chat"
         self._timeout = httpx.Timeout(timeout_seconds)
         self._logger = logger.bind(component="ollama_inference_provider")
         self._think = think
+        self._num_ctx = num_ctx
 
     async def generate(self, request: InferenceRequest) -> InferenceResponse:
         try:
@@ -143,6 +145,9 @@ class OllamaInferenceProvider:
             # режима при необходимости вырезается из ответа (_strip_thinking),
             # а пользователю попадает только чистый результат.
             "think": self._think,
+            # Контекст на запрос (OLLAMA_NUM_CTX): перекрывает дефолт сервера
+            # OLLAMA_CONTEXT_LENGTH независимо от способа его запуска.
+            "options": {"num_ctx": self._num_ctx},
         }
         if request.tools:
             body["tools"] = [self._serialize_tool(spec) for spec in request.tools]

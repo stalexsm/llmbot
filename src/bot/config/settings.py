@@ -27,13 +27,18 @@ class Settings(BaseSettings):
 
     telegram_bot_token: SecretStr
     ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "qwen3:1.7b"
+    ollama_model: str = "qwen3:4b"
 
     # Режим размышлений модели (think). Маленьким reasoning-моделям вроде
     # qwen3 он нужен: без него они могут молча выдавать пустой ответ
     # на многошаговых инструментальных задачах.
     # Моделям без поддержки thinking оставь false.
     ollama_think: bool = False
+
+    # Окно контекста на запрос (options.num_ctx в /api/chat): перекрывает
+    # дефолт сервера Ollama (обычно 4096) независимо от способа его запуска.
+    # Больше окно — больше памяти под KV-кэш.
+    ollama_num_ctx: int = Field(default=8192, ge=1)
 
     # Allowlist чатов через запятую: пусто — бот отвечает всем,
     # заполнен — сообщения из чужих чатов молча игнорируются.

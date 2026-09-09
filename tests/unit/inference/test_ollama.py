@@ -50,6 +50,7 @@ async def ok_handler(request: httpx.Request) -> httpx.Response:
     assert body["stream"] is False
     assert body["model"] == "qwen3:1.7b"
     assert body["messages"] == [{"role": "user", "content": "Привет"}]
+    assert body["options"] == {"num_ctx": 8192}
     return httpx.Response(
         200,
         json={
@@ -168,6 +169,27 @@ async def test_think_true_reaches_the_wire(
         timeout_seconds=0.5,
         logger=logger,
         think=True,
+    )
+
+    async with client:
+        await provider.generate(make_request())
+
+
+async def test_num_ctx_reaches_the_wire(
+    logger: structlog.stdlib.BoundLogger,
+) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode("utf-8"))
+        assert body["options"] == {"num_ctx": 4096}
+        return httpx.Response(200, json={"message": {"role": "assistant", "content": "Ответ"}})
+
+    client = httpx.AsyncClient(transport=MockTransport(handler))
+    provider = OllamaInferenceProvider(
+        client=client,
+        base_url="http://ollama.test",
+        timeout_seconds=0.5,
+        logger=logger,
+        num_ctx=4096,
     )
 
     async with client:

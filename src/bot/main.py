@@ -144,6 +144,7 @@ async def run() -> None:
             timeout_seconds=settings.ollama_timeout_seconds,
             logger=logger,
             think=settings.ollama_think,
+            num_ctx=settings.ollama_num_ctx,
         )
         # Учёт токенов: декоратор на шве InferenceProvider пишет llm_call на
         # каждый вызов модели; сервис закрывает запуск записью run.

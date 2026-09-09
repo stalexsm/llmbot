@@ -221,10 +221,12 @@ async def test_full_pipeline_exec_tool_roundtrip(
 
     await handlers.handle_text(make_telegram_message("выполни команду").as_(bot))
 
-    # Первый запрос: описание инструмента и отключённые размышления.
+    # Первый запрос: описание инструмента, отключённые размышления и окно
+    # контекста по умолчанию.
     first_body = bodies[0]
     assert first_body["tools"][0]["function"]["name"] == "execute_command"
     assert first_body["think"] is False
+    assert first_body["options"] == {"num_ctx": 8192}
     # Второй запрос: пара «вызов → результат» с выводом настоящей команды.
     second_messages = bodies[1]["messages"]
     assert [message["role"] for message in second_messages] == [

@@ -67,6 +67,7 @@ async def run_benchmark(settings: Settings, logger: structlog.stdlib.BoundLogger
             timeout_seconds=settings.ollama_timeout_seconds,
             logger=logger,
             think=settings.ollama_think,
+            num_ctx=settings.ollama_num_ctx,
         )
         tracker = TokenTrackingProvider(inner=ollama)
         collector = RunMetricsCollector(

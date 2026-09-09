@@ -54,6 +54,25 @@ def test_think_enabled_from_env(monkeypatch: MonkeyPatch, raw: str) -> None:
     assert Settings(_env_file=None).ollama_think is True
 
 
+def test_num_ctx_defaults_to_8192(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.delenv("OLLAMA_NUM_CTX", raising=False)
+    assert Settings(_env_file=None).ollama_num_ctx == 8192
+
+
+def test_num_ctx_from_env(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("OLLAMA_NUM_CTX", "4096")
+    assert Settings(_env_file=None).ollama_num_ctx == 4096
+
+
+def test_num_ctx_must_be_positive(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
+    monkeypatch.setenv("OLLAMA_NUM_CTX", "0")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
 def test_metrics_prices_default_to_zero(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
     monkeypatch.delenv("METRICS_INPUT_PRICE_PER_MTOK", raising=False)
