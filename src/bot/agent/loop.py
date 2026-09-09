@@ -18,7 +18,7 @@ from bot.agent.tools import Tool
 from bot.application.errors import EmptyInferenceResponseError
 from bot.domain.ids import ModelId, RequestId
 from bot.domain.messages import InferenceMessage, MessageRole
-from bot.domain.tools import ToolCall, ToolResult
+from bot.domain.tools import ExecutionContext, ToolCall, ToolResult
 from bot.inference.models import InferenceRequest
 from bot.inference.provider import InferenceProvider
 
@@ -111,7 +111,14 @@ class AgentLoop:
         history: tuple[InferenceMessage, ...],
         user_message: InferenceMessage,
         progress: AgentProgress | None = None,
+        context: ExecutionContext | None = None,
     ) -> AgentRun:
+        """Прокрутить цикл запуска; контекст выполнения доходит до инструментов.
+
+        ``context`` — скоуп владельца и прочее окружение запуска: цикл сам
+        его не интерпретирует, каждый инструмент решает, нужен ли он ему.
+        """
+        execution_context = context if context is not None else ExecutionContext()
         reporter = progress if progress is not None else _NULL_PROGRESS
         started_at = time.monotonic()
         messages: list[InferenceMessage] = [
@@ -192,7 +199,7 @@ class AgentLoop:
             exchange.append(assistant)
             executed_results: list[ToolResult] = []
             for call in response.tool_calls:
-                result = await self._execute(request_id, call, reporter)
+                result = await self._execute(request_id, call, reporter, execution_context)
                 if not result.succeeded:
                     failed_tool_results += 1
                 executed_results.append(result)
@@ -255,6 +262,7 @@ class AgentLoop:
         request_id: RequestId,
         call: ToolCall,
         progress: AgentProgress,
+        context: ExecutionContext,
     ) -> ToolResult:
         """Выполнить вызов инструмента; неизвестное имя не рвёт цикл."""
         tool = self._tools.get(call.name)
@@ -269,7 +277,7 @@ class AgentLoop:
                 f"{', '.join(str(name) for name in self._tools)}.",
                 succeeded=False,
             )
-        return await tool.execute(request_id, call, progress)
+        return await tool.execute(request_id, call, progress, context)
 
     def _log_run(
         self,

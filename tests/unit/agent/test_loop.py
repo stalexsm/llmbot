@@ -8,10 +8,11 @@ import structlog.stdlib
 
 from bot.agent.exec import ExecTool
 from bot.agent.loop import AgentLoop
+from bot.agent.progress import AgentProgress
 from bot.application.errors import EmptyInferenceResponseError
-from bot.domain.ids import ModelId, RequestId, ToolId
+from bot.domain.ids import ModelId, RequestId, TelegramUserId, ToolId
 from bot.domain.messages import InferenceMessage, MessageRole
-from bot.domain.tools import ToolCall
+from bot.domain.tools import ExecutionContext, ToolCall, ToolResult, ToolSpec
 from bot.inference.provider import InferenceProvider
 from tests.fakes import (
     RecordingProgress,
@@ -356,3 +357,70 @@ async def test_null_progress_is_used_by_default(
     run = await loop.run(RequestId(str(uuid4())), (), USER)  # progress не передан
 
     assert run.final_answer == "Ответ"
+
+
+class ContextCapturingTool:
+    """Фальшивка Tool: запоминает контекст выполнения каждого вызова."""
+
+    def __init__(self) -> None:
+        self.contexts: list[ExecutionContext] = []
+        self.spec = ToolSpec(
+            name=ToolId("capture"),
+            description="stub",
+            parameters=(),
+            required=(),
+        )
+
+    async def execute(
+        self,
+        request_id: RequestId,
+        call: ToolCall,
+        progress: AgentProgress,
+        context: ExecutionContext,
+    ) -> ToolResult:
+        self.contexts.append(context)
+        return ToolResult(content="выполнено", succeeded=True)
+
+
+async def test_execution_context_reaches_tools(
+    logger: structlog.stdlib.BoundLogger,
+) -> None:
+    """Цикл прокидывает контекст выполнения (скоуп владельца) инструментам."""
+    provider = ScriptedInferenceProvider(
+        [tool_call_response("capture", "{}"), final_response("Готово")]
+    )
+    tool = ContextCapturingTool()
+    loop = AgentLoop(
+        inference=provider,
+        model=ModelId("qwen3:1.7b"),
+        system_prompt="Ты тестовый агент.",
+        tools=(tool,),
+        step_limit=5,
+        logger=logger,
+    )
+    context = ExecutionContext(owner_id=TelegramUserId(42))
+
+    await loop.run(RequestId(str(uuid4())), (), USER, context=context)
+
+    assert tool.contexts == [context]
+
+
+async def test_run_without_context_defaults_to_empty_context(
+    logger: structlog.stdlib.BoundLogger,
+) -> None:
+    provider = ScriptedInferenceProvider(
+        [tool_call_response("capture", "{}"), final_response("Готово")]
+    )
+    tool = ContextCapturingTool()
+    loop = AgentLoop(
+        inference=provider,
+        model=ModelId("qwen3:1.7b"),
+        system_prompt="Ты тестовый агент.",
+        tools=(tool,),
+        step_limit=5,
+        logger=logger,
+    )
+
+    await loop.run(RequestId(str(uuid4())), (), USER)
+
+    assert tool.contexts == [ExecutionContext()]

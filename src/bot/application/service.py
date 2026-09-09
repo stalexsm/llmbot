@@ -10,9 +10,31 @@ from bot.agent.progress import AgentProgress
 from bot.application.models import UserMessageRequest, UserMessageResponse
 from bot.domain.ids import TelegramChatId
 from bot.domain.messages import InferenceMessage, MessageRole
+from bot.domain.tools import ExecutionContext
 from bot.metrics.collector import RunMetrics
 from bot.sessions.store import ChatSessionStore
 from bot.sessions.window import trim_to_window
+
+
+def _dialogue_turns(
+    history: tuple[InferenceMessage, ...],
+    current_text: str,
+) -> tuple[str, ...]:
+    """Реплики диалога для контекста выполнения: история и текущий вопрос.
+
+    Формат — «Роль: текст»; из истории берутся только реплики диалога
+    (user/assistant, tool-обмен в сессиях и не хранится). Последняя реплика —
+    текущий вопрос пользователя: без него переписывание не разрешит
+    местоимения именно этого вопроса.
+    """
+    labels = {MessageRole.USER: "Пользователь", MessageRole.ASSISTANT: "Ассистент"}
+    turns = [
+        f"{labels[message.role]}: {message.content}"
+        for message in history
+        if message.role in labels
+    ]
+    turns.append(f"Пользователь: {current_text}")
+    return tuple(turns)
 
 
 class ApplicationService:
@@ -82,7 +104,16 @@ class ApplicationService:
                 self._history_limit,
             )
             user_message = InferenceMessage(role=MessageRole.USER, content=request.text)
-            run = await self._agent.run(request.request_id, history, user_message, progress)
+            # Скоуп владельца (ADR-0002) доходит до инструментов контекстом
+            # выполнения: search_documents ищет только в его корпусе; реплики
+            # диалога нужны переписыванию поискового запроса.
+            context = ExecutionContext(
+                owner_id=request.user_id,
+                recent_turns=_dialogue_turns(history, request.text),
+            )
+            run = await self._agent.run(
+                request.request_id, history, user_message, progress, context
+            )
             # Отказ-подобный ответ — не пишем его в сессию (иначе он учит модель
             # сдаваться) и пробуем ещё раз: и когда команды провалились, и когда
             # модель даже не попыталась ими воспользоваться.
@@ -95,7 +126,9 @@ class ApplicationService:
                     request_id=request.request_id,
                     attempt=attempt,
                 )
-                run = await self._agent.run(request.request_id, history, user_message, progress)
+                run = await self._agent.run(
+                    request.request_id, history, user_message, progress, context
+                )
             # В сессию попадает только диалог из обмена — сообщение пользователя
             # и финальный ответ; tool-обмен хранилище отфильтровывает само.
             # Незавершённые попытки (исключение) сессию не меняют.

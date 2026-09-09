@@ -327,7 +327,7 @@ class TestPromptBudget:
     с числом скиллов и управляется владельцем, а не кодом.
     """
 
-    _BASE_BUDGET_CHARS = 900
+    _BASE_BUDGET_CHARS = 1150
     _DATE_BUDGET_CHARS = 150
 
     def test_base_prompt_fits_budget(self) -> None:
@@ -354,6 +354,10 @@ class TestPromptBudget:
         # Имя инструмента и анти-эхо правило.
         assert "execute_command" in prompt
         assert "stdout" in prompt
+        # Поиск по документам: имя инструмента, Источник и честное «не нашёл».
+        assert "search_documents" in prompt
+        assert "Источник" in prompt
+        assert "не нашёл" in prompt
         # Чтение скилла файлом через exec с примером пути.
         assert "cat skills/weather/SKILL.md" in prompt
         # Живые данные — только через инструмент.

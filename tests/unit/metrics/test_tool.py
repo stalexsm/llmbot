@@ -8,13 +8,14 @@ import structlog.stdlib
 
 from bot.agent.progress import AgentProgress, NullProgress
 from bot.domain.ids import RequestId, ToolId
-from bot.domain.tools import ToolCall, ToolResult, ToolSpec
+from bot.domain.tools import ExecutionContext, ToolCall, ToolResult, ToolSpec
 from bot.metrics.collector import RunMetricsCollector
 from bot.metrics.recorder import MetricsRecorder
 from bot.metrics.tool import MeteredTool
 
 REQUEST_ID = RequestId("req-1")
 PROGRESS = NullProgress()
+CONTEXT = ExecutionContext()
 
 
 class StubTool:
@@ -30,8 +31,13 @@ class StubTool:
         )
 
     async def execute(
-        self, request_id: RequestId, call: ToolCall, progress: AgentProgress
+        self,
+        request_id: RequestId,
+        call: ToolCall,
+        progress: AgentProgress,
+        context: ExecutionContext,
     ) -> ToolResult:
+        self.last_context = context
         return self._result
 
 
@@ -56,6 +62,7 @@ async def run_metered(
         REQUEST_ID,
         ToolCall(name=ToolId("execute_command"), arguments=arguments),
         PROGRESS,
+        CONTEXT,
     )
     line = json.loads((directory / "events.jsonl").read_text(encoding="utf-8"))
     return line, returned
@@ -65,7 +72,11 @@ class ExplodingTool(StubTool):
     """Фальшивка Tool: бросает исключение вместо результата (сбой spawn)."""
 
     async def execute(
-        self, request_id: RequestId, call: ToolCall, progress: AgentProgress
+        self,
+        request_id: RequestId,
+        call: ToolCall,
+        progress: AgentProgress,
+        context: ExecutionContext,
     ) -> ToolResult:
         raise RuntimeError("spawn failed")
 
@@ -151,6 +162,7 @@ async def test_failed_execution_still_records_tool_call(tmp_path: Path) -> None:
             REQUEST_ID,
             ToolCall(name=ToolId("execute_command"), arguments='{"command": "ls"}'),
             PROGRESS,
+            CONTEXT,
         )
 
     (line,) = [
@@ -162,3 +174,45 @@ async def test_failed_execution_still_records_tool_call(tmp_path: Path) -> None:
     assert line["succeeded"] is False
     assert line["output_size"] == 0
     assert line["output_tokens"] == 0
+
+
+async def test_non_exec_tool_recorded_under_its_spec_name(tmp_path: Path) -> None:
+    """Не-exec инструмент учитывается под именем спеки, а не классом команды."""
+    collector, directory = make_collector(tmp_path)
+    stub = StubTool(ToolResult(content="Найдено фрагментов: 1", succeeded=True))
+    stub.spec = ToolSpec(
+        name=ToolId("search_documents"),
+        description="stub",
+        parameters=(),
+        required=(),
+    )
+    metered = MeteredTool(inner=stub, collector=collector)
+    arguments = json.dumps({"query": "сколько дней отпуска"}, ensure_ascii=False)
+
+    returned = await metered.execute(
+        REQUEST_ID,
+        ToolCall(name=ToolId("search_documents"), arguments=arguments),
+        PROGRESS,
+        CONTEXT,
+    )
+
+    (line,) = [
+        json.loads(line)
+        for line in (directory / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert line["tool_name"] == "search_documents"
+    assert line["input_size"] == len(arguments)
+    assert line["output_size"] == len("Найдено фрагментов: 1")
+    assert line["succeeded"] is True
+    # Контекст выполнения доходит до внутреннего инструмента насквозь.
+    assert stub.last_context is CONTEXT
+    assert returned.content == "Найдено фрагментов: 1"
+
+
+async def test_search_query_content_not_recorded(tmp_path: Path) -> None:
+    arguments = json.dumps({"query": "секретный запрос про Иванова"}, ensure_ascii=False)
+    line, _ = await run_metered(tmp_path, arguments, ToolResult(content="x", succeeded=True))
+
+    dumped = json.dumps(line, ensure_ascii=False)
+    assert "секретный запрос" not in dumped
+    assert "Иванова" not in dumped

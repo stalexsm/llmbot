@@ -1,14 +1,25 @@
 """Test doubles and factories shared across unit and integration tests."""
 
 import json
+from pathlib import Path
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import structlog.stdlib
+from aiogram import Bot
+from aiogram.methods import SendMessage
 from aiogram.types import Message
+from pytest import MonkeyPatch
 
 from bot.domain.ids import ModelId, RequestId, ToolId
 from bot.domain.messages import InferenceMessage
 from bot.domain.tools import ToolCall
+from bot.inference.embeddings import EmbeddingProvider, EmbeddingRequest, EmbeddingResponse
 from bot.inference.models import InferenceRequest, InferenceResponse, InferenceUsage
+from bot.rag.migrations import apply_migrations as apply_rag_migrations
+from bot.rag.models import EMBEDDING_DIMENSION
+from bot.rag.service import RagService
+from bot.rag.store import RagStore
 
 
 class RecordingProgress:
@@ -96,6 +107,30 @@ def final_response(text: str) -> InferenceResponse:
     return InferenceResponse(request_id=RequestId(str(uuid4())), content=text)
 
 
+class StubQueryRewriter:
+    """Фейковка порта rag-слоя QueryRewriter: заготовка, эхо или сбой.
+
+    Без заготовки возвращает вопрос как есть (пасsthrough); каждый вызов
+    запоминает (request_id, вопрос, реплики) для проверок прокидывания.
+    """
+
+    def __init__(self, rewritten: str | None = None, *, error: Exception | None = None) -> None:
+        self.rewritten = rewritten
+        self.error = error
+        self.calls: list[tuple[RequestId, str, tuple[str, ...]]] = []
+
+    async def rewrite(
+        self,
+        request_id: RequestId,
+        question: str,
+        recent_turns: tuple[str, ...],
+    ) -> str:
+        self.calls.append((request_id, question, recent_turns))
+        if self.error is not None:
+            raise self.error
+        return self.rewritten if self.rewritten is not None else question
+
+
 class FailingInferenceProvider:
     """Inference provider that always raises the configured exception."""
 
@@ -128,14 +163,139 @@ class SpyMetricsCollector:
         self.finished.append((request_id, success))
 
 
-def make_telegram_message(text: str, *, message_id: int = 42, chat_id: int = 100) -> Message:
+def make_telegram_message(
+    text: str,
+    *,
+    message_id: int = 42,
+    chat_id: int = 100,
+    user_id: int = 7,
+    with_author: bool = True,
+) -> Message:
     """Build a realistic private-chat aiogram Message without any I/O."""
-    return Message.model_validate(
-        {
-            "message_id": message_id,
-            "date": 1735689600,
-            "chat": {"id": chat_id, "type": "private"},
-            "from": {"id": 7, "is_bot": False, "first_name": "Tester"},
-            "text": text,
-        }
+    data: dict = {
+        "message_id": message_id,
+        "date": 1735689600,
+        "chat": {"id": chat_id, "type": "private"},
+        "text": text,
+    }
+    if with_author:
+        data["from"] = {"id": user_id, "is_bot": False, "first_name": "Tester"}
+    return Message.model_validate(data)
+
+
+class MockEmbeddingProvider:
+    """Детерминированный in-memory провайдер эмбеддингов для тестов.
+
+    Структурно реализует ``bot.inference.embeddings.EmbeddingProvider``:
+    вектор текста — устойчивая функция его байтов (одинаковый текст даёт
+    одинаковый вектор). Семантическую близость реальных моделей фейковка
+    не воспроизводит — пороги в тестах задаются явно.
+    """
+
+    def __init__(self, dimension: int = EMBEDDING_DIMENSION) -> None:
+        self.requests: list[EmbeddingRequest] = []
+        self._dimension = dimension
+
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
+        self.requests.append(request)
+        return EmbeddingResponse(
+            request_id=request.request_id,
+            embeddings=tuple(self._vector(text) for text in request.texts),
+        )
+
+    def _vector(self, text: str) -> tuple[float, ...]:
+        values = [0.0] * self._dimension
+        for position, byte in enumerate(text.encode("utf-8")[: self._dimension]):
+            values[position] = (byte % 32) / 31.0
+        return tuple(values)
+
+
+class KeywordEmbeddingProvider:
+    """Фейковка эмбеддингов с семантикой «одно ключевое слово — одна ось».
+
+    Текст получает one-hot вектор по первому известному ключевому слову:
+    запрос и чанки с одним словом дают косинусную близость 1, текст без
+    известных слов уходит на отдельную ось-заглушку и ни с чем не совпадает.
+    Поиск по порогу становится детерминированным без живой модели.
+    """
+
+    def __init__(self, keywords: tuple[str, ...], dimension: int = EMBEDDING_DIMENSION) -> None:
+        if len(keywords) + 1 > dimension:
+            raise ValueError("keywords must fit the embedding dimension")
+        self.requests: list[EmbeddingRequest] = []
+        self._keywords = keywords
+        self._dimension = dimension
+
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
+        self.requests.append(request)
+        return EmbeddingResponse(
+            request_id=request.request_id,
+            embeddings=tuple(self._vector(text) for text in request.texts),
+        )
+
+    def _axis(self, text: str) -> int:
+        lowered = text.lower()
+        for index, keyword in enumerate(self._keywords):
+            if keyword in lowered:
+                return index
+        return len(self._keywords)  # ось «мимо корпуса»: ни с чем не совпадает
+
+    def _vector(self, text: str) -> tuple[float, ...]:
+        values = [0.0] * self._dimension
+        values[self._axis(text)] = 1.0
+        return tuple(values)
+
+
+# Ключевые слова по умолчанию для тестового поиска: «отпуск» — ось 0,
+# «командировка» — ось 1; тексты без них ни с чем не совпадают.
+_TEST_KEYWORDS = ("отпуск", "командировка")
+
+
+def make_rag_service(
+    tmp_path: Path,
+    logger: structlog.stdlib.BoundLogger,
+    embeddings: EmbeddingProvider | None = None,
+) -> RagService:
+    """RagService с tmp-БД и настройками по умолчанию (порог 0.5)."""
+    database = tmp_path / "rag.db"
+    apply_rag_migrations(database)
+    return RagService(
+        store=RagStore(database=database, logger=logger),
+        embeddings=embeddings or KeywordEmbeddingProvider(_TEST_KEYWORDS),
+        model=ModelId("fake-embed"),
+        chunk_target_chars=900,
+        chunk_overlap_chars=150,
+        top_k=5,
+        overfetch=4,
+        min_similarity=0.5,
+        max_file_bytes=20 * 1024 * 1024,
+        max_text_chars=200_000,
+        max_chunks=300,
+        logger=logger,
     )
+
+
+def mock_telegram_api(bot: Bot, monkeypatch: MonkeyPatch) -> AsyncMock:
+    """Перехват исходящих Telegram API вызовов без сети.
+
+    SendMessage возвращает свежее сообщение, привязанное к боту: правки
+    статуса через ``edit_text`` в тестах работают, как в живом Telegram.
+    """
+    next_id = {"value": 100}
+
+    async def fake_request(bot: Bot, method: object, **_kwargs: object) -> Message | None:
+        if isinstance(method, SendMessage):
+            next_id["value"] += 1
+            return Message.model_validate(
+                {
+                    "message_id": next_id["value"],
+                    "date": 1735689600,
+                    "chat": {"id": 100, "type": "private"},
+                    "text": method.text,
+                }
+            ).as_(bot)
+        return None
+
+    request_mock = AsyncMock(side_effect=fake_request)
+    monkeypatch.setattr(bot.session, "make_request", request_mock)
+    return request_mock

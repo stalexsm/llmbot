@@ -7,7 +7,7 @@ __pycache__/
 *.egg-info/
 .venv/
 
-# Chat session data (/.data/chats/<chat_id>.jsonl)
+# Chat session database (/.data/chats.db) and legacy JSONL sessions (/.data/chats/)
 .data/
 
 # Tooling caches

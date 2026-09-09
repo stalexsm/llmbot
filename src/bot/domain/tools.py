@@ -7,7 +7,7 @@ JSON-аргументами. Модели провайдеро-независи�
 
 from dataclasses import dataclass
 
-from bot.domain.ids import ToolId
+from bot.domain.ids import TelegramUserId, ToolId
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,24 @@ class ToolCall:
 
     name: ToolId
     arguments: str
+
+
+@dataclass(frozen=True)
+class ExecutionContext:
+    """Контекст выполнения запуска агента: скоуп, в котором работают инструменты.
+
+    ``owner_id`` — Владелец документов (ADR-0002): инструмент поиска идёт
+    только по корпусу этого владельца; exec-инструмент контекст игнорирует.
+    Значение ``None`` — запуск без скоупа владельца (инструменты, которым
+    владельцу быть обязательно, честно отвечают «недоступно»).
+
+    ``recent_turns`` — реплики диалога в формате «Роль: текст», включая
+    текущий вопрос пользователя; инструмент поиска отдаёт их переписыванию
+    запроса, exec-инструмент не смотрит.
+    """
+
+    owner_id: TelegramUserId | None = None
+    recent_turns: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
