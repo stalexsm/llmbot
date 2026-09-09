@@ -23,6 +23,7 @@ Telegram-бот на Python поверх локальной языковой м�
   по документам инструментом `search_documents`, отвечая с указанием
   источника; отвечает «не нашёл», если ответа в документах нет;
 - **/new** — команда начинает новую чат-сессию: старая история отбрасывается;
+- **/clear** — команда очищает корпус документов пользователя: удаляются все его документы с чанками и эмбеддингами;
 - выполняемые команды в чат не выводятся (внутренняя кухня агента);
   длинные ответы разбиваются на несколько сообщений по границам строк.
 
@@ -34,7 +35,7 @@ Telegram (aiogram adapter)                сплиттер длинных отв
 ApplicationService (use case: ProcessUserMessage) ←→ ChatSessionStore (.data/chats.db · SQLite)
         ↓                                              + окно истории, блокировка на чат
                                                        + DocumentService (.data/rag.db: индексация,
-                                                         /documents, /delete; блокировка на владельца)
+                                                         /documents, /delete, /clear; блокировка на владельца)
 AgentLoop (агентный цикл) —— Tool: ExecTool (shell в корне проекта, таймаут, обрезка вывода)
         |       \___ Tool: SearchDocumentsTool (поиск по документам владельца)
         |                     индекс скиллов в системном промпте
@@ -375,7 +376,7 @@ src/bot/
 │   └── cli.py           # точка входа python -m bot.evaluation (живой Ollama)
 └── telegram/
     ├── handlers.py      # aiogram-обработчики (/start, /new, текст, документы,
-    │                   #   /documents, /delete; статус индексации — правки месседжа)
+    │                   #   /documents, /delete, /clear; статус индексации — правки месседжа)
     ├── mapper.py        # aiogram Message → UserMessageRequest
     └── splitter.py      # разбивка длинных ответов на части по границам строк
 

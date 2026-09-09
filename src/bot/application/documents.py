@@ -85,6 +85,10 @@ class DocumentService:
         """
         self._rag.delete_document(owner_id, name)
 
+    def clear_documents(self, owner_id: TelegramUserId) -> int:
+        """Очистить корпус владельца; вернуть число удалённых документов."""
+        return self._rag.clear_documents(owner_id)
+
     def _lock_for(self, owner_id: TelegramUserId) -> asyncio.Lock:
         lock = self._owner_locks.get(owner_id)
         if lock is None:

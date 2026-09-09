@@ -238,6 +238,54 @@ class RagStore:
             )
         return bool(deleted)
 
+    def clear_documents(self, owner_id: TelegramUserId) -> int:
+        """Очистить корпус владельца: удалить все его документы, чанки и векторы.
+
+        Одна транзакция; возвращает число удалённых документов. Корпуса
+        других владельцев не затрагиваются (ADR-0002).
+        """
+        owner_key = int(owner_id)
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    """
+                    DELETE FROM chunk_vectors WHERE chunk_id IN (
+                        SELECT c.id FROM chunks AS c
+                        JOIN documents AS d ON d.id = c.document_id
+                        WHERE d.owner_id = ?
+                    )
+                    """,
+                    (owner_key,),
+                )
+                connection.execute(
+                    """
+                    DELETE FROM chunks WHERE document_id IN (
+                        SELECT id FROM documents WHERE owner_id = ?
+                    )
+                    """,
+                    (owner_key,),
+                )
+                connection.execute("DELETE FROM documents WHERE owner_id = ?", (owner_key,))
+                deleted = connection.execute("SELECT changes()").fetchone()[0]
+        except (sqlite3.Error, OSError) as exc:
+            self._logger.warning(
+                "rag_storage_failed",
+                owner_id=owner_key,
+                operation="clear_documents",
+                status="error",
+            )
+            raise RagStorageError(
+                "Failed to clear the document corpus in the RAG database"
+            ) from exc
+        if deleted:
+            self._logger.info(
+                "rag_corpus_cleared",
+                owner_id=owner_key,
+                documents=deleted,
+            )
+        return int(deleted)
+
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
         """Соединение на одну операцию; на успехе — commit, на сбое — rollback."""

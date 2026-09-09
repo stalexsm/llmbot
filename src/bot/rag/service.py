@@ -137,6 +137,14 @@ class RagService:
         if not self._store.delete_document(owner_id, name):
             raise DocumentNotFoundError(f"Document not found: {name}")
 
+    def clear_documents(self, owner_id: TelegramUserId) -> int:
+        """Очистить корпус владельца: удалить все документы с чанками и векторами.
+
+        Возвращает число удалённых документов; поиск по пустому корпусу
+        отвечает «ничего не найдено» пустым кортежем.
+        """
+        return self._store.clear_documents(owner_id)
+
     async def search(
         self,
         request_id: RequestId,

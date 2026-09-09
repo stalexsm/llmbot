@@ -68,6 +68,7 @@ _DOCUMENTS_HEADER_TEXT = "📚 Ваши документы:"
 _DELETE_USAGE_TEXT = "Использование: /delete имя-файла — удалить документ из вашего корпуса."
 _DOCUMENT_DELETED_TEXT = "🗑 Документ удалён: {name}."
 _DOCUMENT_NOT_FOUND_TEXT = "Документ «{name}» не найден."
+_CORPUS_CLEARED_TEXT = "🗑 Корпус очищен: удалено документов — {count}."
 
 
 class TelegramHandlers:
@@ -97,6 +98,7 @@ class TelegramHandlers:
         router.message.register(self.handle_new, Command("new"))
         router.message.register(self.handle_documents, Command("documents"))
         router.message.register(self.handle_delete, Command("delete"))
+        router.message.register(self.handle_clear, Command("clear"))
         router.message.register(self.handle_document, F.document)
         router.message.register(self.handle_text, F.text, ~F.text.startswith("/"))
 
@@ -326,6 +328,25 @@ class TelegramHandlers:
             return
         self._logger.info("document_deleted", owner_id=int(owner_id))
         await message.answer(_DOCUMENT_DELETED_TEXT.format(name=name))
+
+    async def handle_clear(self, message: Message) -> None:
+        """Команда /clear: очистить корпус владельца, без подтверждения."""
+        if self._chat_not_allowed(message):
+            return
+        owner_id = await self._owner_or_answer(message)
+        if owner_id is None:
+            return
+        try:
+            deleted = self._documents.clear_documents(owner_id)
+        except ApplicationError:
+            self._logger.error("corpus_clear_failed", chat_id=message.chat.id, status="error")
+            await message.answer(_ERROR_TEXT)
+            return
+        self._logger.info("corpus_cleared", owner_id=int(owner_id), documents=deleted)
+        if deleted == 0:
+            await message.answer(_NO_DOCUMENTS_TEXT)
+            return
+        await message.answer(_CORPUS_CLEARED_TEXT.format(count=deleted))
 
     async def _owner_or_answer(self, message: Message) -> TelegramUserId | None:
         """Владелец корпуса; без автора — понятная ошибка и ``None`` (ADR-0002)."""

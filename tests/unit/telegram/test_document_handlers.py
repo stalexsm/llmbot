@@ -1,4 +1,4 @@
-"""Unit-тесты документных хендлеров: загрузка, /documents, /delete."""
+"""Unit-тесты документных хендлеров: загрузка, /documents, /delete, /clear."""
 
 import asyncio
 from pathlib import Path
@@ -324,6 +324,51 @@ async def test_delete_unknown_name_answers_with_corpus_list(
     assert isinstance(sent, SendMessage)
     assert "не найден" in sent.text
     assert "handbook.txt" in sent.text
+
+
+async def test_clear_wipes_corpus_and_reports_count(
+    bot: Bot, logger: structlog.stdlib.BoundLogger, monkeypatch: MonkeyPatch
+) -> None:
+    handlers, documents, _ = make_document_handlers(logger)
+    documents.clear_documents.return_value = 3
+    request_mock = mock_telegram_api(bot, monkeypatch)
+
+    await handlers.handle_clear(make_telegram_message("/clear").as_(bot))
+
+    documents.clear_documents.assert_called_once()
+    args = documents.clear_documents.call_args.args
+    assert int(args[0]) == OWNER_ID
+    sent = sent_methods(request_mock)[0]
+    assert isinstance(sent, SendMessage)
+    assert "удалено документов — 3" in sent.text
+
+
+async def test_clear_empty_corpus_reports_no_documents(
+    bot: Bot, logger: structlog.stdlib.BoundLogger, monkeypatch: MonkeyPatch
+) -> None:
+    handlers, documents, _ = make_document_handlers(logger)
+    documents.clear_documents.return_value = 0
+    request_mock = mock_telegram_api(bot, monkeypatch)
+
+    await handlers.handle_clear(make_telegram_message("/clear").as_(bot))
+
+    sent = sent_methods(request_mock)[0]
+    assert isinstance(sent, SendMessage)
+    assert "пока нет документов" in sent.text
+
+
+async def test_clear_storage_failure_answers_error(
+    bot: Bot, logger: structlog.stdlib.BoundLogger, monkeypatch: MonkeyPatch
+) -> None:
+    handlers, documents, _ = make_document_handlers(logger)
+    documents.clear_documents.side_effect = RagStorageError("db down")
+    request_mock = mock_telegram_api(bot, monkeypatch)
+
+    await handlers.handle_clear(make_telegram_message("/clear").as_(bot))
+
+    sent = sent_methods(request_mock)[0]
+    assert isinstance(sent, SendMessage)
+    assert "Не удалось получить ответ модели" in sent.text
 
 
 async def test_commands_without_author_get_friendly_error(

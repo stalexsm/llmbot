@@ -137,3 +137,17 @@ async def test_delete_unknown_document_raises(
 
     with pytest.raises(DocumentNotFoundError):
         documents.delete_document(OWNER_A, "missing.txt")
+
+
+async def test_clear_documents_wipes_owner_corpus_only(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    documents = make_documents(tmp_path, logger)
+    await documents.index(upload(OWNER_A, "a.txt", "текст владельца A".encode()))
+    await documents.index(upload(OWNER_B, "b.txt", "текст владельца B".encode()))
+
+    deleted = documents.clear_documents(OWNER_A)
+
+    assert deleted == 1
+    assert documents.list_documents(OWNER_A) == ()
+    assert [document.name for document in documents.list_documents(OWNER_B)] == ["b.txt"]

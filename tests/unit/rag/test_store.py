@@ -240,6 +240,42 @@ def test_search_empty_corpus_returns_nothing(
     )
 
 
+def test_clear_documents_removes_only_owner_corpus(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    store = make_store(tmp_path / "rag.db", logger)
+    for owner in (OWNER_A, OWNER_B):
+        store.replace_document(
+            owner,
+            "rules.txt",
+            DocumentKind.TXT,
+            [Chunk(position=0, text=f"документ владельца {int(owner)}")],
+            [unit_vector(0)],
+        )
+    store.replace_document(
+        OWNER_A,
+        "guide.md",
+        DocumentKind.MD,
+        [Chunk(position=0, text="второй документ владельца A")],
+        [unit_vector(1)],
+    )
+
+    deleted = store.clear_documents(OWNER_A)
+
+    assert deleted == 2
+    assert fetch_counts(tmp_path / "rag.db") == {"documents": 1, "chunks": 1, "chunk_vectors": 1}
+    assert store.list_documents(OWNER_A) == ()
+    assert [document.name for document in store.list_documents(OWNER_B)] == ["rules.txt"]
+
+
+def test_clear_empty_corpus_returns_zero(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    store = make_store(tmp_path / "rag.db", logger)
+
+    assert store.clear_documents(OWNER_A) == 0
+
+
 def test_corrupt_database_maps_to_application_error(
     tmp_path: Path, logger: structlog.stdlib.BoundLogger
 ) -> None:
