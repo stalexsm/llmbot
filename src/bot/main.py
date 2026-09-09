@@ -21,6 +21,7 @@ from bot.agent.loop import AgentLoop
 from bot.agent.prompts import build_system_prompt
 from bot.agent.skills import load_skills, render_skills_index
 from bot.application.documents import DocumentService
+from bot.application.search import SearchDocumentsTool
 from bot.application.service import ApplicationService
 from bot.config.settings import Settings
 from bot.domain.ids import ModelId
@@ -100,48 +101,13 @@ async def run() -> None:
             logger=logger,
         )
         # Учёт вызовов инструментов: декоратор на шве Tool пишет tool_call
-        # на каждую выполненную команду exec.
+        # на каждый вызов (exec — с классом команды, поиск — под своим именем).
         metered_exec_tool = MeteredTool(inner=exec_tool, collector=metrics_collector)
-        # Индекс скиллов собирается один раз на старте: новый файл попадёт
-        # в индекс при следующем запуске, без правки кода.
-        skills = load_skills(settings.agent_skills_directory, logger)
-        if not settings.agent_skills_directory.is_dir():
-            logger.warning(
-                "skills_directory_missing",
-                directory=str(settings.agent_skills_directory),
-            )
-        logger.info(
-            "skills_index_built",
-            directory=str(settings.agent_skills_directory),
-            count=len(skills),
-            names=[entry.name for entry in skills],
-        )
-        agent_loop = AgentLoop(
-            inference=inference,
-            model=ModelId(settings.ollama_model),
-            system_prompt=build_system_prompt(render_skills_index(skills)),
-            tools=(metered_exec_tool,),
-            step_limit=settings.agent_max_steps,
-            keep_steps=settings.agent_compaction_keep_steps,
-            logger=logger,
-        )
         # Схемы БД — только миграции alembic (ADR-0003): применяются один раз
         # на старте; сбой роняет процесс до старта polling (fail fast). БД
         # чат-сессий и rag-БД — отдельные файлы, у каждого слоя свои миграции.
         apply_migrations(CHAT_DATABASE_PATH)
         apply_rag_migrations(RAG_DATABASE_PATH)
-
-        service = ApplicationService(
-            agent=agent_loop,
-            sessions=ChatSessionStore(
-                database=CHAT_DATABASE_PATH,
-                history_limit=settings.agent_history_max_messages,
-                logger=logger,
-            ),
-            history_limit=settings.agent_history_max_messages,
-            logger=logger,
-            metrics=metrics_collector,
-        )
 
         # RAG: эмбеддинги — тот же httpx-клиент, отдельный таймаут /api/embed;
         # сервис документов сериализует загрузки одного владельца.
@@ -165,6 +131,46 @@ async def run() -> None:
             logger=logger,
         )
         documents = DocumentService(rag_service, logger)
+        # Инструмент поиска по документам: скоуп владельца приходит контекстом
+        # выполнения из цикла (ADR-0002), в метрики — только размеры и статус.
+        metered_search_tool = MeteredTool(
+            inner=SearchDocumentsTool(rag_service, logger), collector=metrics_collector
+        )
+        # Индекс скиллов собирается один раз на старте: новый файл попадёт
+        # в индекс при следующем запуске, без правки кода.
+        skills = load_skills(settings.agent_skills_directory, logger)
+        if not settings.agent_skills_directory.is_dir():
+            logger.warning(
+                "skills_directory_missing",
+                directory=str(settings.agent_skills_directory),
+            )
+        logger.info(
+            "skills_index_built",
+            directory=str(settings.agent_skills_directory),
+            count=len(skills),
+            names=[entry.name for entry in skills],
+        )
+        agent_loop = AgentLoop(
+            inference=inference,
+            model=ModelId(settings.ollama_model),
+            system_prompt=build_system_prompt(render_skills_index(skills)),
+            tools=(metered_exec_tool, metered_search_tool),
+            step_limit=settings.agent_max_steps,
+            keep_steps=settings.agent_compaction_keep_steps,
+            logger=logger,
+        )
+
+        service = ApplicationService(
+            agent=agent_loop,
+            sessions=ChatSessionStore(
+                database=CHAT_DATABASE_PATH,
+                history_limit=settings.agent_history_max_messages,
+                logger=logger,
+            ),
+            history_limit=settings.agent_history_max_messages,
+            logger=logger,
+            metrics=metrics_collector,
+        )
 
         # aiogram expects a plain numeric timeout here: during polling it
         # computes `session.timeout + polling_timeout` for long-poll requests.

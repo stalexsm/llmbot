@@ -21,7 +21,7 @@ from bot.agent.output import clean_output, truncate_middle
 from bot.agent.progress import AgentProgress
 from bot.agent.skills import SKILL_READ_COMMAND
 from bot.domain.ids import RequestId, ToolId
-from bot.domain.tools import ToolCall, ToolParameter, ToolResult, ToolSpec
+from bot.domain.tools import ExecutionContext, ToolCall, ToolParameter, ToolResult, ToolSpec
 
 # Дренаж потоков после убийства группы: обычно мгновенный (EOF приходит
 # сразу), но потомок, сбежавший из группы через новую сессию, может держать
@@ -83,7 +83,10 @@ def _limited_result(content: str, succeeded: bool, max_output_chars: int) -> Too
 
 
 class ExecTool:
-    """Единственный инструмент агента: shell-команда с таймаутом и обрезкой вывода."""
+    """Инструмент exec: shell-команда с таймаутом и обрезкой вывода.
+
+    Контекст выполнения (скоуп владельца) игнорирует: shell общий на всех.
+    """
 
     def __init__(
         self,
@@ -118,8 +121,14 @@ class ExecTool:
         return self._spec
 
     async def execute(
-        self, request_id: RequestId, call: ToolCall, progress: AgentProgress
+        self,
+        request_id: RequestId,
+        call: ToolCall,
+        progress: AgentProgress,
+        context: ExecutionContext,
     ) -> ToolResult:
+        """Выполнить команду; контекст выполнения (скоуп владельца) не нужен."""
+        del context
         command = command_from_arguments(call.arguments)
         if command is None:
             return _limited_result(

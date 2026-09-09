@@ -199,6 +199,14 @@ tool-calls, Pydantic только на границе JSON, таймауты, м
 | `DocumentIndexProgress` (Protocol) | `application/progress.py` | реализует `TelegramIndexProgress` | `RagService` |
 | `ApplicationError` и подтипы | `application/errors.py` | кидают нижние слои | Telegram-слой |
 
+> **Примечание (тикет 04, помечено к обновлению в тикете 07):** контракт `Tool`
+> расширен контекстом выполнения — `ExecutionContext` (`domain/tools.py`, скоуп
+> владельца, ADR-0002) прокидывается `AgentLoop` каждому инструменту; `ExecTool`
+> его игнорирует. Добавлен инструмент `search_documents` (`application/search.py`:
+> структурно реализует `Tool` над `RagService`, обёрнут в `MeteredTool`). Эти строки
+> и разделы про agent/rag в этом документе будут дополнены при финальной правке
+> документации в тикете 07.
+
 Выполняемые команды в чат не выводятся (внутренняя кухня агента, та же
 политика сокрытия, что и для логов): `ExecTool` отчитывается прогрессу,
 по умолчанию это заглушка `NullProgress`.
