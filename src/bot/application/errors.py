@@ -50,6 +50,10 @@ class UnsupportedDocumentError(RagError):
     """Формат документа не поддерживается или файл не является текстом."""
 
 
+class CorruptedDocumentError(RagError):
+    """Файл поддерживаемого формата повреждён: парсер не смог его прочитать."""
+
+
 class EmptyDocumentError(RagError):
     """Из документа не удалось извлечь текст: он пуст."""
 

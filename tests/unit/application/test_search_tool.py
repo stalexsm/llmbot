@@ -19,7 +19,8 @@ from bot.domain.ids import RequestId, TelegramUserId, ToolId
 from bot.domain.tools import ExecutionContext, ToolCall
 from bot.inference.embeddings import EmbeddingRequest, EmbeddingResponse
 from bot.rag.service import RagService
-from tests.fakes import StubQueryRewriter, make_rag_service
+from tests.fakes import KeywordEmbeddingProvider, StubQueryRewriter, make_rag_service
+from tests.unit.rag.fixtures import load as load_fixture
 
 REQUEST_ID = RequestId("search-tool-test")
 OWNER_A = TelegramUserId(1)
@@ -99,6 +100,22 @@ async def test_hits_are_returned_with_sources(
     assert "Найдено фрагментов: 1" in result.content
     assert "Источник: reglament.txt" in result.content
     assert "28 календарных дней" in result.content
+
+
+async def test_pdf_hits_carry_page_in_source(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    """Чанк PDF попадает модели с Источником до страницы (тикет 06)."""
+    rag = make_rag_service(tmp_path, logger, KeywordEmbeddingProvider(("rubles",)))
+    await rag.index_document(REQUEST_ID, OWNER_A, "handbook.pdf", load_fixture("sample.pdf"))
+
+    result = await make_tool_with(rag).execute(
+        REQUEST_ID, search_call("700 rubles per day"), PROGRESS, CONTEXT_A
+    )
+
+    assert result.succeeded is True
+    assert "Источник: handbook.pdf, страница 2" in result.content
+    assert "700 rubles" in result.content
 
 
 async def test_below_threshold_returns_explicit_not_found(

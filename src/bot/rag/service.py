@@ -22,9 +22,9 @@ from bot.application.progress import (
 )
 from bot.domain.ids import ModelId, RequestId, TelegramUserId
 from bot.inference.embeddings import EmbeddingProvider, EmbeddingRequest, EmbeddingResponse
-from bot.rag.chunking import chunk_text
-from bot.rag.extract import document_kind, extract_text
-from bot.rag.models import EMBEDDING_DIMENSION, Chunk, DocumentInfo, IndexedDocument, SearchHit
+from bot.rag.chunking import chunk_pages
+from bot.rag.extract import document_kind, extract_pages
+from bot.rag.models import EMBEDDING_DIMENSION, DocumentInfo, IndexedDocument, SearchHit
 from bot.rag.store import RagStore
 
 
@@ -83,21 +83,19 @@ class RagService:
         await self._report(observer, IndexingStage.EXTRACTING)
         if len(content) > self._max_file_bytes:
             raise DocumentTooLargeError("Document exceeds the file size limit")
-        text = extract_text(name, content)
-        if len(text) > self._max_text_chars:
+        pages = extract_pages(name, content)
+        total_chars = sum(len(page.text) for page in pages)
+        if total_chars > self._max_text_chars:
             raise DocumentTooLargeError("Document exceeds the extracted text limit")
 
-        texts = chunk_text(
-            text,
+        chunks = chunk_pages(
+            pages,
             target_chars=self._chunk_target_chars,
             overlap_chars=self._chunk_overlap_chars,
         )
-        if len(texts) > self._max_chunks:
+        if len(chunks) > self._max_chunks:
             raise DocumentTooLargeError("Document exceeds the chunk count limit")
-        chunks = [
-            Chunk(position=position, text=chunk_text_value)
-            for position, chunk_text_value in enumerate(texts)
-        ]
+        texts = [chunk.text for chunk in chunks]
         await self._report(observer, IndexingStage.CHUNKED, chunks=len(chunks))
 
         await self._report(observer, IndexingStage.EMBEDDING, chunks=len(chunks))

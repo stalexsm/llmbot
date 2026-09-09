@@ -13,6 +13,7 @@ from aiogram.types import Message
 from bot.application.documents import DocumentService, DocumentUpload
 from bot.application.errors import (
     ApplicationError,
+    CorruptedDocumentError,
     DocumentNotFoundError,
     DocumentTooLargeError,
     EmbeddingError,
@@ -55,7 +56,9 @@ _NO_AUTHOR_TEXT = (
     "⚠ Не удалось определить автора сообщения. "
     "Документы привязаны к пользователю, поэтому без автора они не принимаются."
 )
-_NO_DOCUMENTS_TEXT = "У вас пока нет документов. Пришлите файл .txt или .md — я его проиндексирую."
+_NO_DOCUMENTS_TEXT = (
+    "У вас пока нет документов. Пришлите файл .txt, .md, .pdf или .docx — я его проиндексирую."
+)
 _DOCUMENTS_HEADER_TEXT = "📚 Ваши документы:"
 _DELETE_USAGE_TEXT = "Использование: /delete имя-файла — удалить документ из вашего корпуса."
 _DOCUMENT_DELETED_TEXT = "🗑 Документ удалён: {name}."
@@ -319,7 +322,9 @@ class TelegramHandlers:
 def _indexing_error_text(exc: ApplicationError) -> str:
     """Понятное сообщение для прикладной ошибки индексации (без деталей)."""
     if isinstance(exc, UnsupportedDocumentError):
-        return "⚠ Такой формат не поддерживается. Пришлите документ .txt или .md."
+        return "⚠ Такой формат не поддерживается. Пришлите документ .txt, .md, .pdf или .docx."
+    if isinstance(exc, CorruptedDocumentError):
+        return "⚠ Не удалось прочитать документ: файл повреждён или защищён паролем."
     if isinstance(exc, EmptyDocumentError):
         return "⚠ В документе не оказалось текста — индексировать нечего."
     if isinstance(exc, DocumentTooLargeError):

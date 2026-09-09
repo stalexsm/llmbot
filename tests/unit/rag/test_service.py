@@ -6,6 +6,7 @@ import pytest
 import structlog.stdlib
 
 from bot.application.errors import (
+    CorruptedDocumentError,
     DocumentTooLargeError,
     EmbeddingError,
     EmptyDocumentError,
@@ -18,6 +19,7 @@ from bot.rag.models import DocumentKind
 from bot.rag.service import RagService
 from bot.rag.store import RagStore
 from tests.fakes import MockEmbeddingProvider
+from tests.unit.rag.fixtures import load as load_fixture
 
 OWNER_A = TelegramUserId(1)
 OWNER_B = TelegramUserId(2)
@@ -184,7 +186,67 @@ async def test_empty_and_unsupported_documents_are_rejected(
     with pytest.raises(EmptyDocumentError):
         await service.index_document(REQUEST_ID, OWNER_A, "empty.txt", b"   \n")
     with pytest.raises(UnsupportedDocumentError):
+        await service.index_document(REQUEST_ID, OWNER_A, "virus.exe", b"MZ binary")
+
+
+async def test_corrupted_pdf_is_application_error(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    service = make_service(tmp_path, logger)
+
+    with pytest.raises(CorruptedDocumentError):
         await service.index_document(REQUEST_ID, OWNER_A, "scan.pdf", b"%PDF-1.4 fake")
+
+
+async def test_pdf_pages_end_up_in_search_hits(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    service = make_service(tmp_path, logger, min_similarity=0.0)
+
+    indexed = await service.index_document(
+        REQUEST_ID, OWNER_A, "handbook.pdf", load_fixture("sample.pdf")
+    )
+
+    assert indexed.document.kind == DocumentKind.PDF
+    assert indexed.chunk_count >= 2
+    hits = await service.search(REQUEST_ID, OWNER_A, "business trips per diem")
+
+    assert hits
+    page_hits = {hit.page: hit for hit in hits if hit.page is not None}
+    assert all(hit.page is not None for hit in hits)
+    # Чанк со суточными — именно страница 2 фикстуры.
+    assert any("700 rubles" in hit.text for hit in hits)
+    assert all(hit.page == 2 for hit in hits if "700 rubles" in hit.text)
+    assert set(page_hits) <= {1, 2, 3}
+
+
+async def test_docx_is_indexed_without_pages(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    service = make_service(tmp_path, logger, min_similarity=0.0)
+
+    indexed = await service.index_document(
+        REQUEST_ID, OWNER_A, "handbook.docx", load_fixture("sample.docx")
+    )
+
+    assert indexed.document.kind == DocumentKind.DOCX
+    hits = await service.search(REQUEST_ID, OWNER_A, "суточные командировка")
+
+    assert hits
+    assert all(hit.document_name == "handbook.docx" for hit in hits)
+    assert all(hit.page is None for hit in hits)
+    assert any("700 рублей" in hit.text for hit in hits)
+
+
+async def test_pdf_text_limit_counts_all_pages(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    service = make_service(tmp_path, logger, max_text_chars=50)
+
+    with pytest.raises(DocumentTooLargeError):
+        await service.index_document(
+            REQUEST_ID, OWNER_A, "handbook.pdf", load_fixture("sample.pdf")
+        )
 
 
 class WrongCountEmbeddingProvider(MockEmbeddingProvider):

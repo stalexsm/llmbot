@@ -1,8 +1,13 @@
-"""Unit-тесты структурного чанкинга: границы, склейка, overlap (Шов 4)."""
+"""Unit-тесты структурного чанкинга: границы, склейка, overlap (Шов 4).
+
+Вторая секция — ``chunk_pages``: чанкинг постранично с привязкой чанка
+PDF к странице (тикет 06).
+"""
 
 import pytest
 
-from bot.rag.chunking import chunk_text
+from bot.rag.chunking import chunk_pages, chunk_text
+from bot.rag.models import PageText
 
 
 def make_paragraphs(count: int, size: int, *, mark: str = "абзац") -> str:
@@ -137,3 +142,51 @@ def test_zero_overlap_disables_overlap() -> None:
 def test_invalid_parameters_fail_fast(target: int, overlap: int) -> None:
     with pytest.raises(ValueError):
         chunk_text("текст", target_chars=target, overlap_chars=overlap)
+
+
+# --- chunk_pages: постраничный чанкинг с привязкой к странице (тикет 06) ---
+
+
+def test_chunk_pages_numbers_chunks_sequentially_across_pages() -> None:
+    pages = [
+        PageText(page=1, text=make_paragraphs(8, 200)),
+        PageText(page=2, text=make_paragraphs(8, 200, mark="вторая")),
+    ]
+
+    chunks = chunk_pages(pages, target_chars=300, overlap_chars=40)
+
+    assert [chunk.position for chunk in chunks] == list(range(len(chunks)))
+    assert len(chunks) > 2
+
+
+def test_chunk_pages_attach_page_numbers_and_never_mix_pages() -> None:
+    pages = [
+        PageText(page=3, text=make_paragraphs(8, 200)),
+        PageText(page=7, text=make_paragraphs(8, 200, mark="седьмая")),
+    ]
+
+    chunks = chunk_pages(pages, target_chars=300, overlap_chars=40)
+
+    # Номер страницы — у страницы, а не по порядку чанков; чанк не содержит
+    # текст чужой страницы, значит Источник точен до страницы.
+    third = [chunk for chunk in chunks if chunk.page == 3]
+    seventh = [chunk for chunk in chunks if chunk.page == 7]
+    assert third and seventh
+    assert all("седьмая" not in chunk.text for chunk in third)
+    assert all("седьмая" in chunk.text for chunk in seventh)
+
+
+def test_chunk_pages_without_page_numbers_for_plain_documents() -> None:
+    chunks = chunk_pages([PageText(page=None, text=make_paragraphs(4, 120))])
+
+    assert chunks
+    assert all(chunk.page is None for chunk in chunks)
+
+
+def test_chunk_pages_skips_empty_pages() -> None:
+    pages = [PageText(page=1, text=""), PageText(page=2, text="Один абзац.")]
+
+    chunks = chunk_pages(pages)
+
+    assert [chunk.page for chunk in chunks] == [2]
+    assert [chunk.text for chunk in chunks] == ["Один абзац."]

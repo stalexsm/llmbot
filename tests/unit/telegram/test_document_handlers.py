@@ -1,6 +1,7 @@
 """Unit-тесты документных хендлеров: загрузка, /documents, /delete."""
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -14,6 +15,7 @@ from pytest import MonkeyPatch
 
 from bot.application.documents import DocumentIndexResult, DocumentService
 from bot.application.errors import (
+    CorruptedDocumentError,
     DocumentNotFoundError,
     DocumentTooLargeError,
     EmbeddingError,
@@ -25,7 +27,8 @@ from bot.domain.ids import DocumentId, TelegramUserId
 from bot.rag.models import DocumentInfo, DocumentKind
 from bot.telegram.handlers import TelegramHandlers
 from bot.telegram.loader import DocumentLoader
-from tests.fakes import make_telegram_message, mock_telegram_api
+from tests.fakes import make_rag_service, make_telegram_message, mock_telegram_api
+from tests.unit.rag.fixtures import load as load_fixture
 
 OWNER_ID = 7
 
@@ -125,6 +128,41 @@ async def test_document_without_author_is_rejected(
     documents.index.assert_not_awaited()
 
 
+async def test_pdf_and_docx_reach_ready_through_real_services(
+    bot: Bot,
+    logger: structlog.stdlib.BoundLogger,
+    monkeypatch: MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """End-to-end через бот: .pdf и .docx доходят до «Документ готов».
+
+    Настоящие DocumentService и RagService (фейковые эмбеддинги, реальный
+    SQLite во временном файле, замоканный Telegram): загрузка → индексация
+    → документ в корпусе владельца, доступный поиску.
+    """
+    documents = DocumentService(make_rag_service(tmp_path, logger), logger)
+    loader = AsyncMock(spec=DocumentLoader)
+    handlers = TelegramHandlers(
+        service=AsyncMock(),  # process_message в этих тестах не участвует
+        documents=documents,
+        document_loader=loader,
+        logger=logger,
+        allowed_chat_ids=frozenset(),
+    )
+    request_mock = mock_telegram_api(bot, monkeypatch)
+
+    for file_name, fixture in (("handbook.pdf", "sample.pdf"), ("handbook.docx", "sample.docx")):
+        loader.load.return_value = load_fixture(fixture)
+        await handlers.handle_document(make_document_message(bot, file_name=file_name))
+        await drain_indexing(handlers)
+        last = sent_methods(request_mock)[-1]
+        assert isinstance(last, EditMessageText)
+        assert "Документ готов" in (last.text or "")
+
+    corpus = documents.list_documents(TelegramUserId(OWNER_ID))
+    assert sorted(document.name for document in corpus) == ["handbook.docx", "handbook.pdf"]
+
+
 async def test_unsupported_format_becomes_friendly_error(
     bot: Bot, logger: structlog.stdlib.BoundLogger, monkeypatch: MonkeyPatch
 ) -> None:
@@ -137,13 +175,14 @@ async def test_unsupported_format_becomes_friendly_error(
 
     last = sent_methods(request_mock)[-1]
     assert isinstance(last, EditMessageText)
-    assert ".txt или .md" in (last.text or "")
+    assert ".txt, .md, .pdf" in (last.text or "")
 
 
 @pytest.mark.parametrize(
     ("error", "fragment"),
     [
         (EmptyDocumentError("empty"), "не оказалось текста"),
+        (CorruptedDocumentError("corrupt"), "повреждён"),
         (DocumentTooLargeError("big"), "слишком большой"),
         (EmbeddingError("embed"), "Эмбеддинг-модель"),
         (RagStorageError("db"), "Хранилище документов"),

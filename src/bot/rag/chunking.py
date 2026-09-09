@@ -9,6 +9,9 @@
 """
 
 import re
+from collections.abc import Sequence
+
+from bot.rag.models import Chunk, PageText
 
 # ATX-заголовок Markdown: от одного до шести «#» и пробел.
 _HEADING_RE = re.compile(r"^#{1,6}\s")
@@ -37,6 +40,27 @@ def chunk_text(text: str, *, target_chars: int = 900, overlap_chars: int = 150) 
     blocks = _split_blocks(text)
     pieces = _merge_blocks(_force_heading_boundaries(blocks), target_chars)
     return _apply_overlap(pieces, overlap_chars)
+
+
+def chunk_pages(
+    pages: Sequence[PageText],
+    *,
+    target_chars: int = 900,
+    overlap_chars: int = 150,
+) -> tuple[Chunk, ...]:
+    """Разбить страницы на чанки с привязкой к странице и сквозной нумерацией.
+
+    Каждая страница чанкуется независимо (тот же структурный чанкинг, что
+    и для всего текста): чанк не смешивает содержимое соседних страниц,
+    поэтому его Источник точен до страницы. Номер страницы берётся у
+    страницы; у странично-слепых форматов он ``None``. Пустые страницы
+    чанков не порождают.
+    """
+    chunks: list[Chunk] = []
+    for page in pages:
+        for piece in chunk_text(page.text, target_chars=target_chars, overlap_chars=overlap_chars):
+            chunks.append(Chunk(position=len(chunks), text=piece, page=page.page))
+    return tuple(chunks)
 
 
 def _split_blocks(text: str) -> list[str]:
