@@ -24,9 +24,12 @@ from bot.application.documents import DocumentService
 from bot.application.search import SearchDocumentsTool
 from bot.application.service import ApplicationService
 from bot.config.settings import Settings
-from bot.domain.ids import ModelId
+from bot.domain.ids import ModelId, RequestId
+from bot.domain.messages import InferenceMessage, MessageRole
 from bot.inference.embeddings_ollama import OllamaEmbeddingProvider
+from bot.inference.models import InferenceRequest
 from bot.inference.ollama import OllamaInferenceProvider
+from bot.inference.provider import InferenceProvider
 from bot.metrics.collector import RunMetricsCollector
 from bot.metrics.provider import MeteredInferenceProvider
 from bot.metrics.recorder import METRICS_DIRECTORY, MetricsRecorder
@@ -62,6 +65,65 @@ def configure_logging(settings: Settings) -> structlog.stdlib.BoundLogger:
         cache_logger_on_first_use=True,
     )
     return structlog.stdlib.get_logger()
+
+
+_REWRITE_SYSTEM_PROMPT = (
+    "Ты готовишь поисковые запросы по документам. Тебе даны последние реплики "
+    "диалога и поисковый запрос, который может содержать местоимения и ссылки "
+    "на диалог. Построй по ним самостоятельный поисковый запрос — полную "
+    "формулировку без местоимений и ссылок на диалог. В ответе только текст "
+    "запроса, одной строкой, без пояснений и кавычек."
+)
+
+
+class LlmQueryRewriter:
+    """Реализация порта rag-слоя QueryRewriter поверх провайдера инференса.
+
+    Тот же чат-модель, что и агентный цикл: один короткий вызов строит
+    самостоятельный Поисковый запрос из вопроса и реплик диалога. Вызов идёт
+    через декоратор метрик, поэтому попадает в общий учёт llm_call; содержимое
+    запроса и реплик в метрики и лог не попадает. Пустой ответ — не сбой,
+    а повод искать по сырому вопросу; исключение от провайдера уходит
+    вызывающей стороне (инструмент переведёт поиск на сырой запрос).
+    """
+
+    def __init__(
+        self,
+        inference: InferenceProvider,
+        model: ModelId,
+        logger: structlog.stdlib.BoundLogger,
+    ) -> None:
+        self._inference = inference
+        self._model = model
+        self._logger = logger.bind(component="query_rewriter")
+
+    async def rewrite(
+        self,
+        request_id: RequestId,
+        question: str,
+        recent_turns: tuple[str, ...],
+    ) -> str:
+        """Переписать вопрос в самостоятельный Поисковый запрос."""
+        parts = []
+        if recent_turns:
+            parts.append("Реплики диалога:\n" + "\n".join(recent_turns))
+        parts.append(f"Поисковый запрос: {question}")
+        parts.append("Самостоятельный поисковый запрос:")
+        response = await self._inference.generate(
+            InferenceRequest(
+                request_id=request_id,
+                model=self._model,
+                messages=(
+                    InferenceMessage(role=MessageRole.SYSTEM, content=_REWRITE_SYSTEM_PROMPT),
+                    InferenceMessage(role=MessageRole.USER, content="\n\n".join(parts)),
+                ),
+            )
+        )
+        rewritten = response.content.strip().strip("\"'«»„“").strip()
+        if not rewritten:
+            self._logger.info("query_rewrite_empty", request_id=request_id)
+            return question
+        return rewritten
 
 
 async def run() -> None:
@@ -109,6 +171,11 @@ async def run() -> None:
         apply_migrations(CHAT_DATABASE_PATH)
         apply_rag_migrations(RAG_DATABASE_PATH)
 
+        # Переписывание поискового запроса (conversation-aware поиск): порт
+        # объявлен в rag-слое, реализация — тот же чат-модель поверх учёта
+        # токенов, сборка здесь, в композиционном корне.
+        query_rewriter = LlmQueryRewriter(inference, ModelId(settings.ollama_model), logger)
+
         # RAG: эмбеддинги — тот же httpx-клиент, отдельный таймаут /api/embed;
         # сервис документов сериализует загрузки одного владельца.
         rag_service = RagService(
@@ -131,10 +198,12 @@ async def run() -> None:
             logger=logger,
         )
         documents = DocumentService(rag_service, logger)
-        # Инструмент поиска по документам: скоуп владельца приходит контекстом
-        # выполнения из цикла (ADR-0002), в метрики — только размеры и статус.
+        # Инструмент поиска по документам: скоуп владельца и реплики диалога
+        # приходят контекстом выполнения из цикла (ADR-0002), перед поиском
+        # запрос переписывается; в метрики — только размеры и статус.
         metered_search_tool = MeteredTool(
-            inner=SearchDocumentsTool(rag_service, logger), collector=metrics_collector
+            inner=SearchDocumentsTool(query_rewriter, rag_service, logger),
+            collector=metrics_collector,
         )
         # Индекс скиллов собирается один раз на старте: новый файл попадёт
         # в индекс при следующем запуске, без правки кода.

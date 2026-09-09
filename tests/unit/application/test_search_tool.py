@@ -13,13 +13,13 @@ import structlog.stdlib
 from structlog.testing import CapturingLogger
 
 from bot.agent.progress import NullProgress
-from bot.application.errors import EmbeddingError
+from bot.application.errors import EmbeddingError, InferenceUnavailableError
 from bot.application.search import SearchDocumentsTool
 from bot.domain.ids import RequestId, TelegramUserId, ToolId
 from bot.domain.tools import ExecutionContext, ToolCall
 from bot.inference.embeddings import EmbeddingRequest, EmbeddingResponse
 from bot.rag.service import RagService
-from tests.fakes import make_rag_service
+from tests.fakes import StubQueryRewriter, make_rag_service
 
 REQUEST_ID = RequestId("search-tool-test")
 OWNER_A = TelegramUserId(1)
@@ -54,11 +54,19 @@ class ExplodingEmbeddings:
 
 
 def make_tool(tmp_path: Path, logger: structlog.stdlib.BoundLogger) -> SearchDocumentsTool:
-    return SearchDocumentsTool(make_rag_service(tmp_path, logger), logger)
+    return SearchDocumentsTool(StubQueryRewriter(), make_rag_service(tmp_path, logger), logger)
 
 
-def make_tool_with(rag: RagService) -> SearchDocumentsTool:
-    return SearchDocumentsTool(rag, structlog.stdlib.get_logger())
+def make_tool_with(
+    rag: RagService,
+    rewriter: StubQueryRewriter | None = None,
+) -> SearchDocumentsTool:
+    """Инструмент над готовым rag-сервисом; по умолчанию — пасsthrough-переписывание."""
+    return SearchDocumentsTool(
+        rewriter if rewriter is not None else StubQueryRewriter(),
+        rag,
+        structlog.stdlib.get_logger(),
+    )
 
 
 def search_call(query: str) -> ToolCall:
@@ -183,6 +191,70 @@ async def test_missing_owner_context_reports_unavailable(
 
     assert result.succeeded is False
     assert "владелец" in result.content.lower()
+
+
+async def test_pronoun_query_finds_chunks_after_rewrite(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    """Уточнение с местоимением находит чанк после переписывания запроса.
+
+    Сырой запрос «перенести их на следующий год» не содержит ни одного
+    ключевого слова корпуса; переписанный запрос выходит на ось «отпуск».
+    """
+    rag = make_rag_service(tmp_path, logger)
+    await rag.index_document(REQUEST_ID, OWNER_A, "reglament.txt", DOCUMENT_A.encode())
+    rewriter = StubQueryRewriter("перенос отпуска на следующий год")
+    tool = make_tool_with(rag, rewriter)
+    turns = (
+        "Пользователь: Сколько дней отпуска?",
+        "Ассистент: 28 календарных дней.",
+        "Пользователь: А можно перенести их на следующий год?",
+    )
+
+    result = await tool.execute(
+        REQUEST_ID,
+        search_call("перенести их на следующий год"),
+        PROGRESS,
+        ExecutionContext(owner_id=OWNER_A, recent_turns=turns),
+    )
+
+    assert result.succeeded is True
+    assert "28 календарных дней" in result.content
+    # Переписывание получило вопрос и реплики диалога из контекста выполнения.
+    assert rewriter.calls == [(REQUEST_ID, "перенести их на следующий год", turns)]
+
+
+async def test_rewrite_failure_falls_back_to_raw_query(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    rag = make_rag_service(tmp_path, logger)
+    await rag.index_document(REQUEST_ID, OWNER_A, "reglament.txt", DOCUMENT_A.encode())
+    tool = make_tool_with(rag, StubQueryRewriter(error=InferenceUnavailableError("down")))
+
+    result = await tool.execute(
+        REQUEST_ID, search_call("сколько дней отпуска"), PROGRESS, CONTEXT_A
+    )
+
+    # Сбой переписывания не рвёт поиск: сырой запрос дошёл до эмбеддингов.
+    assert result.succeeded is True
+    assert "28 календарных дней" in result.content
+
+
+async def test_rewrite_failure_logs_no_query_content(
+    tmp_path: Path,
+    logger: structlog.stdlib.BoundLogger,
+    capturing_logger: CapturingLogger,
+) -> None:
+    """При сбое переписывания содержимое запроса в лог не попадает."""
+    secret_query = "зарплата директора по имени Иван"
+    rag = make_rag_service(tmp_path, logger)
+    await rag.index_document(REQUEST_ID, OWNER_A, "reglament.txt", DOCUMENT_A.encode())
+    tool = make_tool_with(rag, StubQueryRewriter(error=InferenceUnavailableError("down")))
+
+    await tool.execute(REQUEST_ID, search_call(secret_query), PROGRESS, CONTEXT_A)
+
+    for call in capturing_logger.calls:
+        assert "Иван" not in json.dumps(call.kwargs, ensure_ascii=False, default=str)
 
 
 async def test_embedding_failure_becomes_tool_result(

@@ -107,6 +107,30 @@ def final_response(text: str) -> InferenceResponse:
     return InferenceResponse(request_id=RequestId(str(uuid4())), content=text)
 
 
+class StubQueryRewriter:
+    """Фейковка порта rag-слоя QueryRewriter: заготовка, эхо или сбой.
+
+    Без заготовки возвращает вопрос как есть (пасsthrough); каждый вызов
+    запоминает (request_id, вопрос, реплики) для проверок прокидывания.
+    """
+
+    def __init__(self, rewritten: str | None = None, *, error: Exception | None = None) -> None:
+        self.rewritten = rewritten
+        self.error = error
+        self.calls: list[tuple[RequestId, str, tuple[str, ...]]] = []
+
+    async def rewrite(
+        self,
+        request_id: RequestId,
+        question: str,
+        recent_turns: tuple[str, ...],
+    ) -> str:
+        self.calls.append((request_id, question, recent_turns))
+        if self.error is not None:
+            raise self.error
+        return self.rewritten if self.rewritten is not None else question
+
+
 class FailingInferenceProvider:
     """Inference provider that always raises the configured exception."""
 

@@ -24,8 +24,10 @@ from bot.domain.ids import (
     TelegramChatId,
     TelegramMessageId,
     TelegramUserId,
+    ToolId,
 )
 from bot.domain.messages import InferenceMessage, MessageRole
+from bot.domain.tools import ExecutionContext, ToolCall, ToolResult, ToolSpec
 from bot.inference.models import InferenceRequest, InferenceResponse
 from bot.inference.provider import InferenceProvider
 from bot.metrics.collector import RunMetrics
@@ -39,6 +41,7 @@ from tests.fakes import (
     SpyMetricsCollector,
     exec_call_response,
     final_response,
+    tool_call_response,
 )
 
 CHAT = TelegramChatId(100)
@@ -508,3 +511,61 @@ async def test_failed_run_still_finishes_metrics_without_success(
         await service.process_message(request)
 
     assert metrics.finished == [(request.request_id, False)]
+
+
+class ContextCapturingTool:
+    """Фальшивка Tool: запоминает контекст выполнения каждого вызова."""
+
+    def __init__(self) -> None:
+        self.contexts: list[ExecutionContext] = []
+        self.spec = ToolSpec(name=ToolId("capture"), description="stub", parameters=(), required=())
+
+    async def execute(
+        self,
+        request_id: RequestId,
+        call: ToolCall,
+        progress: object,
+        context: ExecutionContext,
+    ) -> ToolResult:
+        self.contexts.append(context)
+        return ToolResult(content="выполнено", succeeded=True)
+
+
+async def test_execution_context_carries_dialogue_turns(
+    logger: structlog.stdlib.BoundLogger, tmp_path: Path
+) -> None:
+    """Контекст выполнения несёт реплики диалога для переписывания запроса."""
+    provider = ScriptedInferenceProvider(
+        [
+            tool_call_response("capture", "{}"),
+            final_response("Ответ"),
+            tool_call_response("capture", "{}"),
+            final_response("Ответ два"),
+        ]
+    )
+    tool = ContextCapturingTool()
+    loop = AgentLoop(
+        inference=provider,
+        model=ModelId("qwen3:1.7b"),
+        system_prompt=SYSTEM_PROMPT,
+        tools=(tool,),
+        step_limit=5,
+        logger=logger,
+    )
+    service = ApplicationService(
+        agent=loop,
+        sessions=make_session_store(tmp_path, logger),
+        history_limit=20,
+        logger=logger,
+        metrics=SpyMetricsCollector(),
+    )
+
+    await service.process_message(make_request("Сколько дней отпуска?"))
+    await service.process_message(make_request("А можно перенести их на следующий год?"))
+
+    assert tool.contexts[0].recent_turns == ("Пользователь: Сколько дней отпуска?",)
+    assert tool.contexts[1].recent_turns == (
+        "Пользователь: Сколько дней отпуска?",
+        "Ассистент: Ответ",
+        "Пользователь: А можно перенести их на следующий год?",
+    )
