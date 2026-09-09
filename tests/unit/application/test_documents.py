@@ -146,8 +146,31 @@ async def test_clear_documents_wipes_owner_corpus_only(
     await documents.index(upload(OWNER_A, "a.txt", "текст владельца A".encode()))
     await documents.index(upload(OWNER_B, "b.txt", "текст владельца B".encode()))
 
-    deleted = documents.clear_documents(OWNER_A)
+    deleted = await documents.clear_documents(OWNER_A)
 
     assert deleted == 1
     assert documents.list_documents(OWNER_A) == ()
     assert [document.name for document in documents.list_documents(OWNER_B)] == ["b.txt"]
+
+
+async def test_clear_waits_for_running_index(
+    tmp_path: Path, logger: structlog.stdlib.BoundLogger
+) -> None:
+    """Очистка берёт блокировку владельца: ждёт идущую индексацию.
+
+    Иначе /clear на фоне фоновой индексации отчитался бы «корпус очищен»,
+    а доехавший следом документ всё равно появился бы в корпусе.
+    """
+    embeddings = SlowMockEmbeddingProvider(delay_seconds=0.1)
+    documents = make_documents(tmp_path, logger, embeddings)
+    await documents.index(upload(OWNER_A, "old.txt", "старый текст".encode()))
+
+    index_task = asyncio.create_task(
+        documents.index(upload(OWNER_A, "new.txt", "новый текст".encode()))
+    )
+    await asyncio.sleep(0.02)  # индексация успела стартовать и держит блокировку
+    deleted = await documents.clear_documents(OWNER_A)
+
+    assert deleted == 2  # вычищен и прежний корпус, и доехавший документ
+    assert documents.list_documents(OWNER_A) == ()
+    await index_task

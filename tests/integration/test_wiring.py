@@ -92,6 +92,15 @@ def sent_message(request_mock: AsyncMock) -> SendMessage:
     return sent
 
 
+def sent_messages(request_mock: AsyncMock) -> list[SendMessage]:
+    """Все исходящие SendMessage, перехваченные моком сессии (без chat action)."""
+    return [
+        call.args[1]
+        for call in request_mock.await_args_list
+        if isinstance(call.args[1], SendMessage)
+    ]
+
+
 async def ok_handler(request: httpx.Request) -> httpx.Response:
     return httpx.Response(
         200,
@@ -241,12 +250,7 @@ async def test_full_pipeline_exec_tool_roundtrip(
     assert "привет из shell" in tool_message["content"]
     # Прогресс шагов в чат не выводится: пользователь видит только финальный ответ
     # (chat action «печатает» — не сообщение и в проверку не попадает).
-    calls = [
-        call.args[1]
-        for call in request_mock.await_args_list
-        if isinstance(call.args[1], SendMessage)
-    ]
-    assert [call.text for call in calls] == ["Модель увидела вывод команды"]
+    assert [call.text for call in sent_messages(request_mock)] == ["Модель увидела вывод команды"]
     # След метрик: llm_call → tool_call → llm_call → агрегированный run.
     lines = [
         json.loads(line)
@@ -313,3 +317,46 @@ async def test_full_pipeline_returns_safe_message_when_ollama_down(
     await handlers.handle_text(message)  # must not raise
 
     assert sent_message(request_mock).text != "Привет из модели"
+
+
+async def test_run_sends_command_menu_before_polling(monkeypatch: MonkeyPatch) -> None:
+    """Композиционный корень отправляет меню команд до старта polling.
+
+    Настоящий ``bot.main.run`` с подменённой Telegram-сессией: миграции —
+    no-op, polling обрывается сентинелом. Наружу должен уйти ровно один
+    ``SetMyCommands`` со списком ``BOT_COMMANDS`` — и он обязан случиться
+    до polling (иначе сентинел не дал бы ему дойти).
+    """
+    from aiogram.client.session.aiohttp import AiohttpSession
+    from aiogram.methods import SetMyCommands
+
+    from bot import main as bot_main
+    from bot.telegram.handlers import BOT_COMMANDS
+
+    class _PollingStarted(BaseException):
+        """Сентинел: polling стартовал — дальше прогон не нужен."""
+
+    async def stop_polling(*args: object, **kwargs: object) -> None:
+        raise _PollingStarted
+
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "123456:TEST-TOKEN")
+    monkeypatch.setattr(bot_main, "apply_migrations", lambda *_args: None)
+    monkeypatch.setattr(bot_main, "apply_rag_migrations", lambda *_args: None)
+    session = AiohttpSession()
+    make_request = AsyncMock(return_value=True)
+    monkeypatch.setattr(session, "make_request", make_request)
+    monkeypatch.setattr(bot_main, "AiohttpSession", lambda timeout=None: session)
+    monkeypatch.setattr(bot_main.Dispatcher, "start_polling", stop_polling)
+
+    with pytest.raises(_PollingStarted):
+        await bot_main.run()
+
+    menu = [
+        call.args[1]
+        for call in make_request.await_args_list
+        if isinstance(call.args[1], SetMyCommands)
+    ]
+    assert len(menu) == 1
+    assert [item.command for item in menu[0].commands] == [
+        command.command for command in BOT_COMMANDS
+    ]

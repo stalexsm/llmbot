@@ -368,7 +368,7 @@ async def test_clear_storage_failure_answers_error(
 
     sent = sent_methods(request_mock)[0]
     assert isinstance(sent, SendMessage)
-    assert "Не удалось получить ответ модели" in sent.text
+    assert "Хранилище документов" in sent.text
 
 
 async def test_commands_without_author_get_friendly_error(

@@ -44,6 +44,10 @@ _NEW_CHAT_TEXT = "🆕 Новый чат: история диалога сбро
 
 _ERROR_TEXT = "Не удалось получить ответ модели. Попробуйте повторить запрос позже."
 
+# Сбой rag-БД в командах документов: модель не участвовала, поэтому текст —
+# про хранилище, а не про ответ модели.
+_STORAGE_ERROR_TEXT = "⚠ Хранилище документов сейчас недоступно. Попробуйте позже."
+
 # Chat action «печатает» живёт у Telegram около пяти секунд; интервал берём
 # с запасом, чтобы индикатор не пропадал во время долгой обработки запроса.
 _TYPING_INTERVAL_SECONDS = 4.5
@@ -309,7 +313,7 @@ class TelegramHandlers:
             documents = self._documents.list_documents(owner_id)
         except ApplicationError:
             self._logger.error("documents_list_failed", chat_id=message.chat.id, status="error")
-            await message.answer(_ERROR_TEXT)
+            await message.answer(_STORAGE_ERROR_TEXT)
             return
         if not documents:
             await message.answer(_NO_DOCUMENTS_TEXT)
@@ -334,7 +338,7 @@ class TelegramHandlers:
             return
         except ApplicationError:
             self._logger.error("document_delete_failed", chat_id=message.chat.id, status="error")
-            await message.answer(_ERROR_TEXT)
+            await message.answer(_STORAGE_ERROR_TEXT)
             return
         self._logger.info("document_deleted", owner_id=int(owner_id))
         await message.answer(_DOCUMENT_DELETED_TEXT.format(name=name))
@@ -347,10 +351,10 @@ class TelegramHandlers:
         if owner_id is None:
             return
         try:
-            deleted = self._documents.clear_documents(owner_id)
+            deleted = await self._documents.clear_documents(owner_id)
         except ApplicationError:
             self._logger.error("corpus_clear_failed", chat_id=message.chat.id, status="error")
-            await message.answer(_ERROR_TEXT)
+            await message.answer(_STORAGE_ERROR_TEXT)
             return
         self._logger.info("corpus_cleared", owner_id=int(owner_id), documents=deleted)
         if deleted == 0:
@@ -399,5 +403,5 @@ def _indexing_error_text(exc: ApplicationError) -> str:
     if isinstance(exc, EmbeddingError):
         return "⚠ Эмбеддинг-модель недоступна. Попробуйте загрузить документ позже."
     if isinstance(exc, RagError):
-        return "⚠ Хранилище документов сейчас недоступно. Попробуйте позже."
+        return _STORAGE_ERROR_TEXT
     return _ERROR_TEXT

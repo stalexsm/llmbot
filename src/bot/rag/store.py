@@ -74,7 +74,7 @@ class RagStore:
         try:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
-                self._delete_document(connection, owner_key, name)
+                self._delete_documents(connection, owner_key, name)
                 cursor = connection.execute(
                     "INSERT INTO documents (owner_id, name, kind) VALUES (?, ?, ?)",
                     (owner_key, name, str(kind)),
@@ -218,7 +218,7 @@ class RagStore:
         try:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
-                self._delete_document(connection, owner_key, name)
+                self._delete_documents(connection, owner_key, name)
                 deleted = connection.execute(
                     "SELECT changes()",
                 ).fetchone()[0]
@@ -248,25 +248,7 @@ class RagStore:
         try:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
-                connection.execute(
-                    """
-                    DELETE FROM chunk_vectors WHERE chunk_id IN (
-                        SELECT c.id FROM chunks AS c
-                        JOIN documents AS d ON d.id = c.document_id
-                        WHERE d.owner_id = ?
-                    )
-                    """,
-                    (owner_key,),
-                )
-                connection.execute(
-                    """
-                    DELETE FROM chunks WHERE document_id IN (
-                        SELECT id FROM documents WHERE owner_id = ?
-                    )
-                    """,
-                    (owner_key,),
-                )
-                connection.execute("DELETE FROM documents WHERE owner_id = ?", (owner_key,))
+                self._delete_documents(connection, owner_key, None)
                 deleted = connection.execute("SELECT changes()").fetchone()[0]
         except (sqlite3.Error, OSError) as exc:
             self._logger.warning(
@@ -315,27 +297,40 @@ class RagStore:
         return sqlite_vec.serialize_float32([float(value) for value in vector])
 
     @staticmethod
-    def _delete_document(connection: sqlite3.Connection, owner_key: int, name: str) -> None:
-        """Удалить прежнюю версию документа владельца (если была)."""
+    def _delete_documents(
+        connection: sqlite3.Connection,
+        owner_key: int,
+        name: str | None,
+    ) -> None:
+        """Каскадно удалить документы владельца с чанками и векторами.
+
+        Общий каскад замены, удаления по имени и полной очистки корпуса:
+        с именем — прежняя версия одного документа, с ``None`` — весь
+        корпус владельца (ADR-0002). Вызывающая сторона держит транзакцию;
+        последним выполняется DELETE документов, поэтому ``SELECT changes()``
+        сразу после каскада возвращает именно число документов.
+        """
+        by_name = "" if name is None else " AND name = ?"
+        params: tuple[int] | tuple[int, str] = (owner_key,) if name is None else (owner_key, name)
         connection.execute(
-            """
+            f"""
             DELETE FROM chunk_vectors WHERE chunk_id IN (
                 SELECT c.id FROM chunks AS c
                 JOIN documents AS d ON d.id = c.document_id
-                WHERE d.owner_id = ? AND d.name = ?
+                WHERE d.owner_id = ?{by_name}
             )
             """,
-            (owner_key, name),
+            params,
         )
         connection.execute(
-            """
+            f"""
             DELETE FROM chunks WHERE document_id IN (
-                SELECT id FROM documents WHERE owner_id = ? AND name = ?
+                SELECT id FROM documents WHERE owner_id = ?{by_name}
             )
             """,
-            (owner_key, name),
+            params,
         )
         connection.execute(
-            "DELETE FROM documents WHERE owner_id = ? AND name = ?",
-            (owner_key, name),
+            f"DELETE FROM documents WHERE owner_id = ?{by_name}",
+            params,
         )

@@ -117,6 +117,15 @@ def sent_message(request_mock: AsyncMock) -> SendMessage:
     return sent
 
 
+def sent_messages(request_mock: AsyncMock) -> list[SendMessage]:
+    """Все исходящие SendMessage, перехваченные моком сессии (без chat action)."""
+    return [
+        call.args[1]
+        for call in request_mock.await_args_list
+        if isinstance(call.args[1], SendMessage)
+    ]
+
+
 async def test_start_answers_with_greeting(
     bot: Bot, logger: structlog.stdlib.BoundLogger, monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -300,12 +309,7 @@ async def test_command_execution_sends_only_final_answer(
 
     await handlers.handle_text(make_telegram_message("покажи привет").as_(bot))
 
-    calls = [
-        call.args[1]
-        for call in request_mock.await_args_list
-        if isinstance(call.args[1], SendMessage)
-    ]
-    assert [call.text for call in calls] == ["Итог: привет"]
+    assert [call.text for call in sent_messages(request_mock)] == ["Итог: привет"]
 
 
 async def test_step_limit_receives_honest_stop_message(
@@ -322,13 +326,8 @@ async def test_step_limit_receives_honest_stop_message(
 
     await handlers.handle_text(make_telegram_message("зациклись").as_(bot))
 
-    calls = [
-        call.args[1]
-        for call in request_mock.await_args_list
-        if isinstance(call.args[1], SendMessage)
-    ]
     # Прогресс шагов в чат не выводится: единственное сообщение — честная остановка.
-    assert [call.text for call in calls] == [handlers_module._STEP_LIMIT_TEXT]
+    assert [call.text for call in sent_messages(request_mock)] == [handlers_module._STEP_LIMIT_TEXT]
 
 
 # --- Allowlist чатов ---------------------------------------------------------
@@ -388,11 +387,7 @@ async def test_filled_allowlist_listed_chat_works_as_before(
 
     service.process_message.assert_awaited_once()
     service.reset_session.assert_awaited_once_with(TelegramChatId(100))
-    sent = [
-        call.args[1]
-        for call in request_mock.await_args_list
-        if isinstance(call.args[1], SendMessage)
-    ]
+    sent = sent_messages(request_mock)
     assert [call.text for call in sent] == [
         "Ответ модели",
         handlers_module._NEW_CHAT_TEXT,
@@ -410,11 +405,7 @@ async def test_long_reply_arrives_as_ordered_parts(
 
     await handlers.handle_text(make_telegram_message("Покажи много текста").as_(bot))
 
-    sent = [
-        call.args[1]
-        for call in request_mock.await_args_list
-        if isinstance(call.args[1], SendMessage)
-    ]
+    sent = sent_messages(request_mock)
     # Разрезы приходятся на границы строк: 285 строк по 14 символов = 3990 в части.
     assert [len(call.text) for call in sent] == [3990, 3990, 420]
     assert "".join(call.text for call in sent) == long_text
