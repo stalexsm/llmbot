@@ -9,7 +9,7 @@ from aiogram import F, Router
 from aiogram.enums import ChatAction
 from aiogram.exceptions import TelegramAPIError
 from aiogram.filters import Command, CommandObject, CommandStart
-from aiogram.types import Message
+from aiogram.types import BotCommand, Message
 
 from bot.application.documents import DocumentService, DocumentUpload
 from bot.application.errors import (
@@ -69,6 +69,16 @@ _DELETE_USAGE_TEXT = "Использование: /delete имя-файла — 
 _DOCUMENT_DELETED_TEXT = "🗑 Документ удалён: {name}."
 _DOCUMENT_NOT_FOUND_TEXT = "Документ «{name}» не найден."
 _CORPUS_CLEARED_TEXT = "🗑 Корпус очищен: удалено документов — {count}."
+
+# Меню команд в Telegram-клиенте: подсветка по «/» с описаниями.
+# Порядок в списке — порядок в меню; синхронизируется с register().
+BOT_COMMANDS: tuple[BotCommand, ...] = (
+    BotCommand(command="start", description="Приветствие и краткая справка"),
+    BotCommand(command="new", description="Новый чат: сбросить историю диалога"),
+    BotCommand(command="documents", description="Показать проиндексированные документы"),
+    BotCommand(command="delete", description="Удалить документ по имени"),
+    BotCommand(command="clear", description="Удалить все ваши документы"),
+)
 
 
 class TelegramHandlers:

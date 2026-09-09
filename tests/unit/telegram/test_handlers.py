@@ -418,3 +418,27 @@ async def test_long_reply_arrives_as_ordered_parts(
     # Разрезы приходятся на границы строк: 285 строк по 14 символов = 3990 в части.
     assert [len(call.text) for call in sent] == [3990, 3990, 420]
     assert "".join(call.text for call in sent) == long_text
+
+
+def test_bot_command_menu_matches_registered_commands(
+    logger: structlog.stdlib.BoundLogger,
+    tmp_path: Path,
+) -> None:
+    """Меню «/» в клиенте показывает ровно те команды, что зарегистрированы."""
+    from aiogram import Router
+    from aiogram.filters import Command, CommandStart
+
+    handlers = make_handlers(logger, make_service(logger, MockInferenceProvider(), tmp_path))
+    router = Router()
+    handlers.register(router)
+
+    registered: set[str] = set()
+    for handler in router.message.handlers:
+        for filter_object in handler.filters or ():
+            filter_callback = filter_object.callback
+            if isinstance(filter_callback, CommandStart):
+                registered.add("start")
+            elif isinstance(filter_callback, Command):
+                registered.update(str(command) for command in filter_callback.commands)
+
+    assert registered == {item.command for item in handlers_module.BOT_COMMANDS}

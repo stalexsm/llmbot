@@ -40,7 +40,7 @@ from bot.rag.service import RagService
 from bot.rag.store import RagStore
 from bot.sessions.migrations import CHAT_DATABASE_PATH, apply_migrations
 from bot.sessions.store import ChatSessionStore
-from bot.telegram.handlers import TelegramHandlers
+from bot.telegram.handlers import BOT_COMMANDS, TelegramHandlers
 from bot.telegram.loader import TelegramDocumentLoader
 
 
@@ -258,6 +258,9 @@ async def run() -> None:
                 logger=logger,
                 allowed_chat_ids=settings.telegram_allowed_chat_ids,
             ).register(dispatcher)
+            # Меню команд (подсветка по «/» с описаниями): сбой роняет
+            # процесс до старта polling — без меню бот тоже неполноценен.
+            await bot.set_my_commands(list(BOT_COMMANDS))
             logger.info(
                 "bot_started",
                 model=settings.ollama_model,
