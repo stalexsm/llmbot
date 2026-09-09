@@ -28,6 +28,8 @@ from bot.metrics.collector import RunMetricsCollector
 from bot.metrics.provider import MeteredInferenceProvider
 from bot.metrics.recorder import METRICS_DIRECTORY, MetricsRecorder
 from bot.metrics.tool import MeteredTool
+from bot.rag.migrations import RAG_DATABASE_PATH
+from bot.rag.migrations import apply_migrations as apply_rag_migrations
 from bot.sessions.migrations import CHAT_DATABASE_PATH, apply_migrations
 from bot.sessions.store import ChatSessionStore
 from bot.telegram.handlers import TelegramHandlers
@@ -118,9 +120,11 @@ async def run() -> None:
             keep_steps=settings.agent_compaction_keep_steps,
             logger=logger,
         )
-        # Схема БД чат-сессий — только миграции alembic (ADR-0003): применяются
-        # один раз на старте; сбой роняет процесс до старта polling (fail fast).
+        # Схемы БД — только миграции alembic (ADR-0003): применяются один раз
+        # на старте; сбой роняет процесс до старта polling (fail fast). БД
+        # чат-сессий и rag-БД — отдельные файлы, у каждого слоя свои миграции.
         apply_migrations(CHAT_DATABASE_PATH)
+        apply_rag_migrations(RAG_DATABASE_PATH)
 
         service = ApplicationService(
             agent=agent_loop,

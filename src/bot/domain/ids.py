@@ -15,6 +15,9 @@ TelegramMessageId = NewType("TelegramMessageId", int)
 RequestId = NewType("RequestId", str)
 ModelId = NewType("ModelId", str)
 
+# RAG identifiers
+DocumentId = NewType("DocumentId", int)
+
 # Future extension points (not used in the first version)
 AgentId = NewType("AgentId", str)
 ToolId = NewType("ToolId", str)

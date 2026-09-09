@@ -8,7 +8,9 @@ from aiogram.types import Message
 from bot.domain.ids import ModelId, RequestId, ToolId
 from bot.domain.messages import InferenceMessage
 from bot.domain.tools import ToolCall
+from bot.inference.embeddings import EmbeddingRequest, EmbeddingResponse
 from bot.inference.models import InferenceRequest, InferenceResponse, InferenceUsage
+from bot.rag.models import EMBEDDING_DIMENSION
 
 
 class RecordingProgress:
@@ -139,3 +141,29 @@ def make_telegram_message(text: str, *, message_id: int = 42, chat_id: int = 100
             "text": text,
         }
     )
+
+
+class MockEmbeddingProvider:
+    """Детерминированный in-memory провайдер эмбеддингов для тестов.
+
+    Структурно реализует ``bot.inference.embeddings.EmbeddingProvider``:
+    вектор текста — устойчивая функция его байтов (одинаковый текст даёт
+    одинаковый вектор, похожие — близкие по косинусу).
+    """
+
+    def __init__(self, dimension: int = EMBEDDING_DIMENSION) -> None:
+        self.requests: list[EmbeddingRequest] = []
+        self._dimension = dimension
+
+    async def embed(self, request: EmbeddingRequest) -> EmbeddingResponse:
+        self.requests.append(request)
+        return EmbeddingResponse(
+            request_id=request.request_id,
+            embeddings=tuple(self._vector(text) for text in request.texts),
+        )
+
+    def _vector(self, text: str) -> tuple[float, ...]:
+        values = [0.0] * self._dimension
+        for position, byte in enumerate(text.encode("utf-8")[: self._dimension]):
+            values[position] = (byte % 32) / 31.0
+        return tuple(values)
