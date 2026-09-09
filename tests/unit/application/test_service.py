@@ -29,6 +29,7 @@ from bot.domain.messages import InferenceMessage, MessageRole
 from bot.inference.models import InferenceRequest, InferenceResponse
 from bot.inference.provider import InferenceProvider
 from bot.metrics.collector import RunMetrics
+from bot.sessions.migrations import apply_migrations
 from bot.sessions.store import ChatSessionStore
 from tests.fakes import (
     FailingInferenceProvider,
@@ -42,6 +43,13 @@ from tests.fakes import (
 
 CHAT = TelegramChatId(100)
 SYSTEM_PROMPT = "Ты тестовый агент."
+
+
+def make_session_store(directory: Path, logger: structlog.stdlib.BoundLogger) -> ChatSessionStore:
+    """Реальный SQLite-store над мигрированной временной БД."""
+    database = directory / "chats.db"
+    apply_migrations(database)
+    return ChatSessionStore(database=database, logger=logger)
 
 
 def make_request(text: str) -> UserMessageRequest:
@@ -87,7 +95,7 @@ def make_service(
     )
     return ApplicationService(
         agent=loop,
-        sessions=ChatSessionStore(directory=directory, logger=logger),
+        sessions=make_session_store(directory, logger),
         history_limit=history_limit,
         logger=logger,
         metrics=metrics,
@@ -153,7 +161,7 @@ async def test_history_window_limits_request_messages(
 ) -> None:
     provider = MockInferenceProvider()
     service = make_service(logger, provider, tmp_path, history_limit=5)
-    sessions = ChatSessionStore(directory=tmp_path, logger=logger)
+    sessions = make_session_store(tmp_path, logger)
     for i in range(8):
         sessions.append(
             CHAT,
@@ -184,7 +192,7 @@ async def test_failed_inference_leaves_session_untouched(
     with pytest.raises(InferenceUnavailableError):
         await service.process_message(make_request("Привет"))
 
-    sessions = ChatSessionStore(directory=tmp_path, logger=logger)
+    sessions = make_session_store(tmp_path, logger)
     assert sessions.load(CHAT) == ()
 
 
@@ -198,7 +206,7 @@ async def test_empty_model_response_raises_explicitly(
     with pytest.raises(EmptyInferenceResponseError):
         await service.process_message(make_request("Привет"))
 
-    sessions = ChatSessionStore(directory=tmp_path, logger=logger)
+    sessions = make_session_store(tmp_path, logger)
     assert sessions.load(CHAT) == ()
 
 
@@ -230,7 +238,7 @@ async def test_tool_exchange_is_not_persisted_to_session(
     response = await service.process_message(make_request("покажи файлы"))
 
     assert response.text == "Готово: привет"
-    sessions = ChatSessionStore(directory=tmp_path, logger=logger)
+    sessions = make_session_store(tmp_path, logger)
     history = sessions.load(CHAT)
     assert [(message.role, message.content) for message in history] == [
         (MessageRole.USER, "покажи файлы"),
@@ -257,7 +265,7 @@ async def test_giveup_run_is_not_persisted_and_retried(
 
     # Принят второй запуск; бракованный не дошёл до пользователя и в сессию.
     assert response.text == "Вот данные: 42"
-    sessions = ChatSessionStore(directory=tmp_path, logger=logger)
+    sessions = make_session_store(tmp_path, logger)
     history = sessions.load(CHAT)
     assert [m.role for m in history] == [MessageRole.USER, MessageRole.ASSISTANT]
     assert history[1].content == "Вот данные: 42"
@@ -294,7 +302,7 @@ async def test_giveup_without_any_tool_attempt_is_retried(
     assert response.text == "В Турции сейчас солнечно, +28°C."
     assert len(provider.requests) == 2
     # Бракованный отказ в сессию не попал: там только принятый обмен.
-    sessions = ChatSessionStore(directory=tmp_path, logger=logger)
+    sessions = make_session_store(tmp_path, logger)
     history = sessions.load(CHAT)
     assert [m.content for m in history] == [
         "Какая погода в Турции?",
@@ -339,7 +347,7 @@ async def test_giveup_after_only_reading_skill_is_retried(
 
     assert response.text == "В Турции сейчас ☀️ +28°C, ветер 10 км/ч."
     assert len(provider.requests) == 4
-    sessions = ChatSessionStore(directory=tmp_path, logger=logger)
+    sessions = make_session_store(tmp_path, logger)
     history = sessions.load(CHAT)
     assert [m.content for m in history][-1] == "В Турции сейчас ☀️ +28°C, ветер 10 км/ч."
 
@@ -358,7 +366,7 @@ async def test_step_limit_stop_reports_flag_and_persists_user_message(
     assert response.text == ""
     assert isinstance(response, UserMessageResponse)
     # Финального ответа нет, tool-обмен не хранится — в сессии только вопрос.
-    sessions = ChatSessionStore(directory=tmp_path, logger=logger)
+    sessions = make_session_store(tmp_path, logger)
     history = sessions.load(CHAT)
     assert [message.role for message in history] == [MessageRole.USER]
 
@@ -414,7 +422,7 @@ async def test_concurrent_messages_in_one_chat_are_serialized(
         "Ответ модели",
         "второй",
     ]
-    sessions = ChatSessionStore(directory=tmp_path, logger=logger)
+    sessions = make_session_store(tmp_path, logger)
     assert len(sessions.load(CHAT)) == 4
 
 

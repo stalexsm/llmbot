@@ -17,6 +17,7 @@ from bot.application.models import UserMessageResponse
 from bot.application.service import ApplicationService
 from bot.domain.ids import ModelId, RequestId, TelegramChatId
 from bot.inference.provider import InferenceProvider
+from bot.sessions.migrations import apply_migrations
 from bot.sessions.store import ChatSessionStore
 from bot.telegram.handlers import TelegramHandlers
 from tests.fakes import (
@@ -28,6 +29,13 @@ from tests.fakes import (
     final_response,
     make_telegram_message,
 )
+
+
+def make_session_store(directory: Path, logger: structlog.stdlib.BoundLogger) -> ChatSessionStore:
+    """Реальный SQLite-store над мигрированной временной БД."""
+    database = directory / "chats.db"
+    apply_migrations(database)
+    return ChatSessionStore(database=database, logger=logger)
 
 
 def make_service(
@@ -51,7 +59,7 @@ def make_service(
     )
     return ApplicationService(
         agent=loop,
-        sessions=ChatSessionStore(directory=tmp_path, logger=logger),
+        sessions=make_session_store(tmp_path, logger),
         history_limit=20,
         logger=logger,
         metrics=SpyMetricsCollector(),
@@ -123,7 +131,7 @@ async def test_new_command_resets_session_and_confirms(
     await handlers.handle_new(make_telegram_message("/new").as_(bot))
 
     assert sent_message(request_mock).text == handlers_module._NEW_CHAT_TEXT
-    sessions = ChatSessionStore(directory=tmp_path, logger=logger)
+    sessions = make_session_store(tmp_path, logger)
     assert sessions.load(TelegramChatId(100)) == ()
     # Следующее сообщение не видит сброшенной истории (только системный промпт + вопрос).
     await handlers.handle_text(make_telegram_message("Как меня зовут?").as_(bot))

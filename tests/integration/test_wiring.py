@@ -28,6 +28,7 @@ from bot.metrics.collector import RunMetricsCollector
 from bot.metrics.provider import MeteredInferenceProvider
 from bot.metrics.recorder import MetricsRecorder
 from bot.metrics.tool import MeteredTool
+from bot.sessions.migrations import apply_migrations
 from bot.sessions.store import ChatSessionStore
 from bot.telegram.handlers import TelegramHandlers
 from tests.fakes import make_telegram_message
@@ -64,9 +65,11 @@ def make_stack(
         step_limit=step_limit,
         logger=logger,
     )
+    chat_database = tmp_path / "chats.db"
+    apply_migrations(chat_database)
     service = ApplicationService(
         agent=agent_loop,
-        sessions=ChatSessionStore(directory=tmp_path, logger=logger),
+        sessions=ChatSessionStore(database=chat_database, logger=logger),
         history_limit=20,
         logger=logger,
         metrics=metrics_collector,

@@ -1,14 +1,24 @@
-"""Файловое хранилище чат-сессий (JSONL, append-only).
+"""Хранилище чат-сессий в SQLite (ADR-0003).
 
-Одна чат-сессия — один файл ``<chat_id>.jsonl`` в каталоге данных; строка
-файла — одно сообщение. Хранится только диалог «пользователь ↔ финальный
-ответ». Системный промпт сессии не принадлежит хранилищу: он собирается
-заново при каждом запросе. Вызовы инструментов и их результаты живут только
-внутри одного агентного запуска и на диск не пишутся: результат инструмента
+Одна БД — один файл ``chats.db``: таблица ``messages(id, chat_id, role,
+content, created_at)`` — история всех чатов. Хранится только диалог
+«пользователь ↔ финальный ответ»: системный промпт собирается заново при
+каждом запросе, вызовы инструментов и их результаты живут только внутри
+одного агентного запуска и на диск не пишутся — результат инструмента
 (особенно ошибка) в истории сбивает модель на следующих ответах.
+
+Схемой владеет alembic (``bot.sessions.migrations``): миграции применяет
+композиционный корень на старте, хранилище работает только с готовой
+схемой. stdlib ``sqlite3``, синхронно, без aiosqlite; соединение
+открывается на операцию и закрывается после неё. Сбой БД маппится на
+прикладное ``SessionStorageError``: Telegram-слой показывает заглушку,
+работа бота не рвётся. Истории старого JSONL-формата не импортируются —
+это dev-данные локальной машины.
 """
 
-import json
+import sqlite3
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import structlog
@@ -19,72 +29,99 @@ from bot.domain.messages import InferenceMessage, MessageRole
 
 
 class ChatSessionStore:
-    """Persisted history of chat sessions, one JSONL file per chat."""
+    """Persisted history of chat sessions in a SQLite database.
 
-    def __init__(self, directory: Path, logger: structlog.stdlib.BoundLogger) -> None:
-        self._directory = directory
+    ``history_limit`` — размер окна истории, читаемого из БД одним запросом
+    (``None`` — без ограничения); application-слой дополнительно режет окно
+    чистой функцией ``window.py``.
+    """
+
+    def __init__(
+        self,
+        database: Path,
+        logger: structlog.stdlib.BoundLogger,
+        history_limit: int | None = None,
+    ) -> None:
+        self._database = database
+        self._history_limit = history_limit
         self._logger = logger.bind(component="chat_session_store")
 
     def load(self, chat_id: TelegramChatId) -> tuple[InferenceMessage, ...]:
-        """Прочитать историю сессии: только реплики диалога, битые строки пропускаются."""
-        session_file = self._file_for(chat_id)
-        if not session_file.exists():
-            return ()
+        """Прочитать историю сессии: окно последних сообщений, хронологически.
+
+        Окно читается запросом ``ORDER BY id DESC LIMIT N`` (ADR-0003)
+        и разворачивается в хронологический порядок.
+        """
+        query = "SELECT role, content FROM messages WHERE chat_id = ? ORDER BY id DESC"
+        chat_key = int(chat_id)
         try:
-            raw_lines = session_file.read_text(encoding="utf-8").splitlines()
-        except OSError as exc:
-            self._logger.warning("session_storage_failed", chat_id=chat_id, operation="load")
+            with self._connect() as connection:
+                if self._history_limit is None:
+                    rows = connection.execute(query, (chat_key,)).fetchall()
+                else:
+                    rows = connection.execute(
+                        query + " LIMIT ?", (chat_key, self._history_limit)
+                    ).fetchall()
+                # Материализация внутри try: битая роль в БД (вручную правленный
+                # файл) — тот же сбой чтения, а не сырой ValueError наружу.
+                messages = [
+                    InferenceMessage(role=MessageRole(str(row[0])), content=str(row[1]))
+                    for row in reversed(rows)
+                ]
+        except (sqlite3.Error, OSError, ValueError) as exc:
+            self._logger.warning(
+                "session_storage_failed",
+                chat_id=chat_id,
+                operation="load",
+                status="error",
+            )
             raise SessionStorageError("Failed to read the chat session") from exc
-        messages: list[InferenceMessage] = []
-        for line_number, line in enumerate(raw_lines, start=1):
-            if not line.strip():
-                continue
-            message = self._parse_line(line)
-            if message is None:
-                self._logger.warning(
-                    "session_line_skipped",
-                    chat_id=chat_id,
-                    line=line_number,
-                )
-                continue
-            if not self._is_dialog_message(message):
-                # Системные и инструментальные строки (в том числе из файлов,
-                # записанных до отказа от хранения tool-обмена) — не диалог.
-                continue
-            messages.append(message)
         return tuple(messages)
 
     def append(self, chat_id: TelegramChatId, *messages: InferenceMessage) -> None:
-        """Дописать сообщения в конец сессии одной записью (атомарно на уровне вызова)."""
+        """Дописать сообщения в сессию одной транзакцией."""
         persisted = [message for message in messages if self._is_dialog_message(message)]
         if not persisted:
             return
-        payload = "".join(
-            json.dumps(
-                {"role": message.role.value, "content": message.content},
-                ensure_ascii=False,
-            )
-            + "\n"
-            for message in persisted
-        )
         try:
-            self._directory.mkdir(parents=True, exist_ok=True)
-            with self._file_for(chat_id).open("a", encoding="utf-8") as session_file:
-                session_file.write(payload)
-        except OSError as exc:
-            self._logger.warning("session_storage_failed", chat_id=chat_id, operation="append")
+            with self._connect() as connection:
+                connection.executemany(
+                    "INSERT INTO messages (chat_id, role, content) VALUES (?, ?, ?)",
+                    [(int(chat_id), message.role.value, message.content) for message in persisted],
+                )
+        except (sqlite3.Error, OSError) as exc:
+            self._logger.warning(
+                "session_storage_failed",
+                chat_id=chat_id,
+                operation="append",
+                status="error",
+            )
             raise SessionStorageError("Failed to append to the chat session") from exc
 
     def reset(self, chat_id: TelegramChatId) -> None:
-        """Обнулить сессию: история отбрасывается (команда /new)."""
+        """Обнулить сессию: DELETE строк чата (команда /new)."""
         try:
-            self._file_for(chat_id).write_text("", encoding="utf-8")
-        except OSError as exc:
-            self._logger.warning("session_storage_failed", chat_id=chat_id, operation="reset")
+            with self._connect() as connection:
+                connection.execute("DELETE FROM messages WHERE chat_id = ?", (int(chat_id),))
+        except (sqlite3.Error, OSError) as exc:
+            self._logger.warning(
+                "session_storage_failed",
+                chat_id=chat_id,
+                operation="reset",
+                status="error",
+            )
             raise SessionStorageError("Failed to reset the chat session") from exc
 
-    def _file_for(self, chat_id: TelegramChatId) -> Path:
-        return self._directory / f"{chat_id}.jsonl"
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        """Соединение на одну операцию; на успехе — commit, на сбое — rollback."""
+        self._database.parent.mkdir(parents=True, exist_ok=True)
+        connection = sqlite3.connect(self._database)
+        try:
+            yield connection
+            connection.commit()
+        finally:
+            connection.close()
 
     @staticmethod
     def _is_dialog_message(message: InferenceMessage) -> bool:
@@ -92,20 +129,8 @@ class ChatSessionStore:
 
         Не диалог: системный промпт (собирается заново при запросе),
         результаты инструментов, assistant-сообщения с вызовами инструментов
-        и пустые сообщения (в старых файлах так выглядят строки tool-вызовов).
+        и пустые сообщения.
         """
         if message.role not in (MessageRole.USER, MessageRole.ASSISTANT):
             return False
         return bool(message.content) and not message.tool_calls
-
-    @staticmethod
-    def _parse_line(line: str) -> InferenceMessage | None:
-        try:
-            record = json.loads(line)
-            role = MessageRole(record["role"])
-            content = record["content"]
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
-            return None
-        if not isinstance(content, str):
-            return None
-        return InferenceMessage(role=role, content=content)
