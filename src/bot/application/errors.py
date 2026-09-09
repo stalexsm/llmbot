@@ -58,5 +58,9 @@ class DocumentTooLargeError(RagError):
     """Документ превышает настроенный лимит (байты, текст или чанки)."""
 
 
+class DocumentNotFoundError(RagError):
+    """Документа с таким именем нет в корпусе владельца."""
+
+
 class RagStorageError(RagError):
     """Rag-БД недоступна: дисковая операция с файлом rag-БД не удалась."""

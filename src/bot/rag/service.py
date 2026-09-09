@@ -11,14 +11,20 @@ Ollama из композиционного корня.
 import structlog
 
 from bot.application.errors import (
+    DocumentNotFoundError,
     DocumentTooLargeError,
     EmbeddingError,
+)
+from bot.application.progress import (
+    DocumentIndexProgress,
+    IndexingStage,
+    NullDocumentIndexProgress,
 )
 from bot.domain.ids import ModelId, RequestId, TelegramUserId
 from bot.inference.embeddings import EmbeddingProvider, EmbeddingRequest, EmbeddingResponse
 from bot.rag.chunking import chunk_text
 from bot.rag.extract import document_kind, extract_text
-from bot.rag.models import EMBEDDING_DIMENSION, Chunk, IndexedDocument, SearchHit
+from bot.rag.models import EMBEDDING_DIMENSION, Chunk, DocumentInfo, IndexedDocument, SearchHit
 from bot.rag.store import RagStore
 
 
@@ -60,13 +66,21 @@ class RagService:
         owner_id: TelegramUserId,
         name: str,
         content: bytes,
+        progress: DocumentIndexProgress | None = None,
     ) -> IndexedDocument:
         """Превратить файл в Документ: извлечь, нарезать, векторизовать, записать.
 
         Завершается документом, доступным поиску, либо прикладной ошибкой
         (неподдерживаемый формат, пустой или слишком большой документ).
         Повторная индексация того же имени заменяет документ атомарно.
+        Наблюдатель стадий вызывается между шагами pipeline: извлечение,
+        число чанков, эмбеддинги; его сбой индексацию не рвёт (гасится
+        с записью в лог — статус пользователю доставит вызывающая сторона).
         """
+        observer: DocumentIndexProgress = (
+            progress if progress is not None else NullDocumentIndexProgress()
+        )
+        await self._report(observer, IndexingStage.EXTRACTING)
         if len(content) > self._max_file_bytes:
             raise DocumentTooLargeError("Document exceeds the file size limit")
         text = extract_text(name, content)
@@ -84,7 +98,9 @@ class RagService:
             Chunk(position=position, text=chunk_text_value)
             for position, chunk_text_value in enumerate(texts)
         ]
+        await self._report(observer, IndexingStage.CHUNKED, chunks=len(chunks))
 
+        await self._report(observer, IndexingStage.EMBEDDING, chunks=len(chunks))
         response = await self._embeddings.embed(
             EmbeddingRequest(
                 request_id=request_id,
@@ -109,6 +125,19 @@ class RagService:
             chunks=len(chunks),
         )
         return IndexedDocument(document=document, chunk_count=len(chunks))
+
+    def list_documents(self, owner_id: TelegramUserId) -> tuple[DocumentInfo, ...]:
+        """Корпус владельца: проиндексированные документы по алфавиту."""
+        return self._store.list_documents(owner_id)
+
+    def delete_document(self, owner_id: TelegramUserId, name: str) -> None:
+        """Удалить документ владельца вместе с чанками и эмбеддингами.
+
+        Неизвестное имя — ``DocumentNotFoundError``: вызывающая сторона
+        отвечает пользователю дружелюбной ошибкой со списком корпуса.
+        """
+        if not self._store.delete_document(owner_id, name):
+            raise DocumentNotFoundError(f"Document not found: {name}")
 
     async def search(
         self,
@@ -141,6 +170,21 @@ class RagService:
             hits=len(hits),
         )
         return hits
+
+    @staticmethod
+    async def _report(
+        observer: DocumentIndexProgress,
+        stage: IndexingStage,
+        *,
+        chunks: int = 0,
+    ) -> None:
+        """Сообщить стадию наблюдателю; его сбой — не повод рвать индексацию."""
+        try:
+            await observer.on_stage(stage, chunks=chunks)
+        except Exception:
+            # Правка статус-месседжа не удалась (Telegram недоступен) —
+            # на результат индексации это влиять не должно.
+            return
 
     def _validate_embeddings(self, response: EmbeddingResponse, *, expected: int) -> None:
         """Ответ эмбеддинг-модели обязан совпадать по числу и размерности."""

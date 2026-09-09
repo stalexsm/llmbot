@@ -1,9 +1,13 @@
 """Test doubles and factories shared across unit and integration tests."""
 
 import json
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
+from aiogram import Bot
+from aiogram.methods import SendMessage
 from aiogram.types import Message
+from pytest import MonkeyPatch
 
 from bot.domain.ids import ModelId, RequestId, ToolId
 from bot.domain.messages import InferenceMessage
@@ -130,17 +134,23 @@ class SpyMetricsCollector:
         self.finished.append((request_id, success))
 
 
-def make_telegram_message(text: str, *, message_id: int = 42, chat_id: int = 100) -> Message:
+def make_telegram_message(
+    text: str,
+    *,
+    message_id: int = 42,
+    chat_id: int = 100,
+    with_author: bool = True,
+) -> Message:
     """Build a realistic private-chat aiogram Message without any I/O."""
-    return Message.model_validate(
-        {
-            "message_id": message_id,
-            "date": 1735689600,
-            "chat": {"id": chat_id, "type": "private"},
-            "from": {"id": 7, "is_bot": False, "first_name": "Tester"},
-            "text": text,
-        }
-    )
+    data: dict = {
+        "message_id": message_id,
+        "date": 1735689600,
+        "chat": {"id": chat_id, "type": "private"},
+        "text": text,
+    }
+    if with_author:
+        data["from"] = {"id": 7, "is_bot": False, "first_name": "Tester"}
+    return Message.model_validate(data)
 
 
 class MockEmbeddingProvider:
@@ -168,3 +178,29 @@ class MockEmbeddingProvider:
         for position, byte in enumerate(text.encode("utf-8")[: self._dimension]):
             values[position] = (byte % 32) / 31.0
         return tuple(values)
+
+
+def mock_telegram_api(bot: Bot, monkeypatch: MonkeyPatch) -> AsyncMock:
+    """Перехват исходящих Telegram API вызовов без сети.
+
+    SendMessage возвращает свежее сообщение, привязанное к боту: правки
+    статуса через ``edit_text`` в тестах работают, как в живом Telegram.
+    """
+    next_id = {"value": 100}
+
+    async def fake_request(bot: Bot, method: object, **_kwargs: object) -> Message | None:
+        if isinstance(method, SendMessage):
+            next_id["value"] += 1
+            return Message.model_validate(
+                {
+                    "message_id": next_id["value"],
+                    "date": 1735689600,
+                    "chat": {"id": 100, "type": "private"},
+                    "text": method.text,
+                }
+            ).as_(bot)
+        return None
+
+    request_mock = AsyncMock(side_effect=fake_request)
+    monkeypatch.setattr(bot.session, "make_request", request_mock)
+    return request_mock

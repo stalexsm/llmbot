@@ -57,7 +57,13 @@ application-слоя, и наоборот:
 - команды `/start` и `/new`, текстовые сообщения; allowlist чатов
   (политика живёт в `Settings`, хендлер получает решённое множество);
 - маппер `Message → UserMessageRequest`;
-- разбивка длинных ответов на части телеграм-совместимой длины по границам строк.
+- разбивка длинных ответов на части телеграм-совместимой длины по границам строк;
+- документы: файл → DocumentService фоновой задачей («Документ получен» —
+  сразу, стадии индексации — одним редактируемым статус-месседжем со
+  троттлингом правок ~1.5 с и фолбэком на новое сообщение), команды
+  `/documents` и `/delete`; владелец — `TelegramUserId` с границы слоя,
+  сообщение без автора не принимается (ADR-0002); скачивание файла скрыто
+  за протоколом `DocumentLoader`.
 
 О Ollama этот слой не знает ничего: ни URL, ни JSON, ни класса провайдера,
 ни логики инференса.
@@ -71,6 +77,14 @@ Use case `ProcessUserMessage` и управление чат-сессией. П�
 Здесь же `reset_session` для `/new` и прикладные исключения, в которые нижние
 слои маппят свои инфраструктурные ошибки. Не знает объектов Telegram API
 и JSON Ollama.
+
+**Документы** — `DocumentService` (`src/bot/application/documents.py`):
+сценарии над корпусом владельца (ADR-0002) — индексация, список, удаление.
+Индексация одного владельца сериализуется блокировкой (как чат — в
+`ApplicationService`), телом работы занимается `RagService`; чат блокировка
+не касается — вызывающая сторона (telegram-слой) крутит её фоновой задачей.
+Прикладные ошибки индексации (формат, лимиты, эмбеддинги, rag-БД, неизвестное
+имя при удалении) пробрасываются наверх как `ApplicationError`.
 
 ### 3 · Agent — харнесс модели — `src/bot/agent/`
 
@@ -181,6 +195,8 @@ tool-calls, Pydantic только на границе JSON, таймауты, м
 | `InferenceProvider` (Protocol) | `inference/provider.py` | реализует адаптер Ollama и декоратор метрик | `AgentLoop` |
 | `RunMetrics` (Protocol) | `metrics/collector.py` | реализует `RunMetricsCollector` | `ApplicationService` |
 | `AgentProgress` (Protocol) | `agent/progress.py` | реализует `NullProgress` (заглушка: выполнения команд в чат не выводятся) | `ExecTool` |
+| `DocumentService` | `application/documents.py` | собирается в композиционном корне над `RagService` | Telegram-слой |
+| `DocumentIndexProgress` (Protocol) | `application/progress.py` | реализует `TelegramIndexProgress` | `RagService` |
 | `ApplicationError` и подтипы | `application/errors.py` | кидают нижние слои | Telegram-слой |
 
 Выполняемые команды в чат не выводятся (внутренняя кухня агента, та же

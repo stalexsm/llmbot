@@ -22,7 +22,13 @@ import structlog
 
 from bot.application.errors import RagStorageError
 from bot.domain.ids import DocumentId, TelegramUserId
-from bot.rag.models import EMBEDDING_DIMENSION, Chunk, DocumentInfo, DocumentKind, SearchHit
+from bot.rag.models import (
+    EMBEDDING_DIMENSION,
+    Chunk,
+    DocumentInfo,
+    DocumentKind,
+    SearchHit,
+)
 
 # Запас на ожидание блокировки: поиск во время замены должен видеть
 # старый корпус, а не падать по «database is locked».
@@ -172,6 +178,65 @@ class RagStore:
             top_similarity=hits[0].similarity if hits else None,
         )
         return hits
+
+    def list_documents(self, owner_id: TelegramUserId) -> tuple[DocumentInfo, ...]:
+        """Корпус владельца: все документы по алфавиту имён."""
+        owner_key = int(owner_id)
+        try:
+            with self._connect() as connection:
+                rows = connection.execute(
+                    "SELECT id, name, kind, created_at FROM documents"
+                    " WHERE owner_id = ? ORDER BY name",
+                    (owner_key,),
+                ).fetchall()
+        except (sqlite3.Error, OSError) as exc:
+            self._logger.warning(
+                "rag_storage_failed",
+                owner_id=owner_key,
+                operation="list_documents",
+                status="error",
+            )
+            raise RagStorageError("Failed to list documents from the RAG database") from exc
+        return tuple(
+            DocumentInfo(
+                id=DocumentId(int(id_)),
+                owner_id=owner_id,
+                name=str(name),
+                kind=DocumentKind(str(kind)),
+                created_at=str(created_at),
+            )
+            for id_, name, kind, created_at in rows
+        )
+
+    def delete_document(self, owner_id: TelegramUserId, name: str) -> bool:
+        """Удалить документ владельца вместе с чанками и векторами.
+
+        Одна транзакция: чанки и эмбеддинги вычищаются вместе с документом.
+        Возвращает ``False``, если документа с таким именем нет.
+        """
+        owner_key = int(owner_id)
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                self._delete_document(connection, owner_key, name)
+                deleted = connection.execute(
+                    "SELECT changes()",
+                ).fetchone()[0]
+        except (sqlite3.Error, OSError) as exc:
+            self._logger.warning(
+                "rag_storage_failed",
+                owner_id=owner_key,
+                operation="delete_document",
+                status="error",
+            )
+            raise RagStorageError("Failed to delete the document from the RAG database") from exc
+        if deleted:
+            self._logger.info(
+                "rag_document_deleted",
+                owner_id=owner_key,
+                name=name,
+            )
+        return bool(deleted)
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:

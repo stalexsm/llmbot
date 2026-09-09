@@ -20,9 +20,11 @@ from bot.agent.exec import ExecTool
 from bot.agent.loop import AgentLoop
 from bot.agent.prompts import build_system_prompt
 from bot.agent.skills import load_skills, render_skills_index
+from bot.application.documents import DocumentService
 from bot.application.service import ApplicationService
 from bot.config.settings import Settings
 from bot.domain.ids import ModelId
+from bot.inference.embeddings_ollama import OllamaEmbeddingProvider
 from bot.inference.ollama import OllamaInferenceProvider
 from bot.metrics.collector import RunMetricsCollector
 from bot.metrics.provider import MeteredInferenceProvider
@@ -30,9 +32,12 @@ from bot.metrics.recorder import METRICS_DIRECTORY, MetricsRecorder
 from bot.metrics.tool import MeteredTool
 from bot.rag.migrations import RAG_DATABASE_PATH
 from bot.rag.migrations import apply_migrations as apply_rag_migrations
+from bot.rag.service import RagService
+from bot.rag.store import RagStore
 from bot.sessions.migrations import CHAT_DATABASE_PATH, apply_migrations
 from bot.sessions.store import ChatSessionStore
 from bot.telegram.handlers import TelegramHandlers
+from bot.telegram.loader import TelegramDocumentLoader
 
 
 def configure_logging(settings: Settings) -> structlog.stdlib.BoundLogger:
@@ -138,6 +143,29 @@ async def run() -> None:
             metrics=metrics_collector,
         )
 
+        # RAG: эмбеддинги — тот же httpx-клиент, отдельный таймаут /api/embed;
+        # сервис документов сериализует загрузки одного владельца.
+        rag_service = RagService(
+            store=RagStore(database=RAG_DATABASE_PATH, logger=logger),
+            embeddings=OllamaEmbeddingProvider(
+                client=http_client,
+                base_url=settings.ollama_base_url,
+                timeout_seconds=settings.ollama_embed_timeout_seconds,
+                logger=logger,
+            ),
+            model=ModelId(settings.ollama_embed_model),
+            chunk_target_chars=settings.rag_chunk_target_chars,
+            chunk_overlap_chars=settings.rag_chunk_overlap_chars,
+            top_k=settings.rag_search_top_k,
+            overfetch=settings.rag_search_overfetch,
+            min_similarity=settings.rag_min_similarity,
+            max_file_bytes=settings.rag_max_file_bytes,
+            max_text_chars=settings.rag_max_text_chars,
+            max_chunks=settings.rag_max_chunks,
+            logger=logger,
+        )
+        documents = DocumentService(rag_service, logger)
+
         # aiogram expects a plain numeric timeout here: during polling it
         # computes `session.timeout + polling_timeout` for long-poll requests.
         session = AiohttpSession(timeout=settings.telegram_timeout_seconds)
@@ -149,6 +177,8 @@ async def run() -> None:
             dispatcher = Dispatcher()
             TelegramHandlers(
                 service=service,
+                documents=documents,
+                document_loader=TelegramDocumentLoader(),
                 logger=logger,
                 allowed_chat_ids=settings.telegram_allowed_chat_ids,
             ).register(dispatcher)

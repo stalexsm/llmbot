@@ -21,6 +21,7 @@ from pytest import MonkeyPatch
 from bot.agent.exec import ExecTool
 from bot.agent.loop import AgentLoop
 from bot.agent.prompts import SYSTEM_PROMPT, build_date_block
+from bot.application.documents import DocumentService
 from bot.application.service import ApplicationService
 from bot.domain.ids import ModelId
 from bot.inference.ollama import OllamaInferenceProvider
@@ -31,6 +32,7 @@ from bot.metrics.tool import MeteredTool
 from bot.sessions.migrations import apply_migrations
 from bot.sessions.store import ChatSessionStore
 from bot.telegram.handlers import TelegramHandlers
+from bot.telegram.loader import DocumentLoader
 from tests.fakes import make_telegram_message
 
 TransportHandler = Callable[[httpx.Request], Coroutine[None, None, httpx.Response]]
@@ -74,7 +76,13 @@ def make_stack(
         logger=logger,
         metrics=metrics_collector,
     )
-    return TelegramHandlers(service=service, logger=logger, allowed_chat_ids=frozenset())
+    return TelegramHandlers(
+        service=service,
+        documents=AsyncMock(spec=DocumentService),
+        document_loader=AsyncMock(spec=DocumentLoader),
+        logger=logger,
+        allowed_chat_ids=frozenset(),
+    )
 
 
 def sent_message(request_mock: AsyncMock) -> SendMessage:

@@ -12,6 +12,7 @@ from pytest import MonkeyPatch
 import bot.telegram.handlers as handlers_module
 from bot.agent.exec import ExecTool
 from bot.agent.loop import AgentLoop
+from bot.application.documents import DocumentService
 from bot.application.errors import InferenceTimeoutError, InferenceUnavailableError
 from bot.application.models import UserMessageResponse
 from bot.application.service import ApplicationService
@@ -20,6 +21,7 @@ from bot.inference.provider import InferenceProvider
 from bot.sessions.migrations import apply_migrations
 from bot.sessions.store import ChatSessionStore
 from bot.telegram.handlers import TelegramHandlers
+from bot.telegram.loader import DocumentLoader
 from tests.fakes import (
     FailingInferenceProvider,
     MockInferenceProvider,
@@ -69,7 +71,13 @@ def make_service(
 def make_handlers(
     logger: structlog.stdlib.BoundLogger, service: ApplicationService
 ) -> TelegramHandlers:
-    return TelegramHandlers(service=service, logger=logger, allowed_chat_ids=frozenset())
+    return TelegramHandlers(
+        service=service,
+        documents=AsyncMock(spec=DocumentService),
+        document_loader=AsyncMock(spec=DocumentLoader),
+        logger=logger,
+        allowed_chat_ids=frozenset(),
+    )
 
 
 def make_stub_handlers(
@@ -83,7 +91,13 @@ def make_stub_handlers(
     service.process_message.return_value = UserMessageResponse(
         request_id=RequestId("stub-request"), text=response_text
     )
-    handlers = TelegramHandlers(service=service, logger=logger, allowed_chat_ids=allowed_chat_ids)
+    handlers = TelegramHandlers(
+        service=service,
+        documents=AsyncMock(spec=DocumentService),
+        document_loader=AsyncMock(spec=DocumentLoader),
+        logger=logger,
+        allowed_chat_ids=allowed_chat_ids,
+    )
     return handlers, service
 
 
