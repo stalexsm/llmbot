@@ -256,7 +256,7 @@ def make_rag_service(
     logger: structlog.stdlib.BoundLogger,
     embeddings: EmbeddingProvider | None = None,
 ) -> RagService:
-    """RagService с tmp-БД и настройками по умолчанию (порог 0.35)."""
+    """RagService с tmp-БД и настройками по умолчанию (порог 0.5)."""
     database = tmp_path / "rag.db"
     apply_rag_migrations(database)
     return RagService(
@@ -267,7 +267,7 @@ def make_rag_service(
         chunk_overlap_chars=150,
         top_k=5,
         overfetch=4,
-        min_similarity=0.35,
+        min_similarity=0.5,
         max_file_bytes=20 * 1024 * 1024,
         max_text_chars=200_000,
         max_chunks=300,

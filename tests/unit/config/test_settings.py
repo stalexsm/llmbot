@@ -106,7 +106,7 @@ def test_rag_defaults(monkeypatch: MonkeyPatch) -> None:
     assert settings.rag_chunk_overlap_chars == 150
     assert settings.rag_search_top_k == 5
     assert settings.rag_search_overfetch == 4
-    assert settings.rag_min_similarity == pytest.approx(0.35)
+    assert settings.rag_min_similarity == pytest.approx(0.5)
     assert settings.rag_max_file_bytes == 20 * 1024 * 1024
     assert settings.rag_max_text_chars == 200_000
     assert settings.rag_max_chunks == 300

@@ -92,9 +92,12 @@ class Settings(BaseSettings):
     # Поиск: сколько чанков возвращается (top-K), во сколько раз шире
     # внутренний переопрос перед фильтром по владельцу и минимальная
     # косинусная близость — ниже порога поиск отвечает «ничего не найдено».
+    # Порог откалиброван на evaluation-датасете (``python -m bot.evaluation``):
+    # худшее попадание 0.578, лучшее ложное срабатывание 0.437 — середина
+    # разделяющей полосы 0.51, зафиксировано с запасом вниз.
     rag_search_top_k: int = Field(default=5, ge=1)
     rag_search_overfetch: int = Field(default=4, ge=1)
-    rag_min_similarity: float = Field(default=0.35, ge=0.0, le=1.0)
+    rag_min_similarity: float = Field(default=0.5, ge=0.0, le=1.0)
 
     # Лимиты индексации: размер файла, извлечённого текста и число чанков.
     rag_max_file_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
