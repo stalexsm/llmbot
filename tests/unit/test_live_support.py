@@ -1,5 +1,6 @@
 """Юнит-тесты хелперов живых тестов: модели сервера Ollama и загрузка .env."""
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -76,8 +77,6 @@ def test_load_dotenv_fills_missing_vars(tmp_path: Path, monkeypatch: pytest.Monk
 
     load_dotenv_into_environ(env_file)
 
-    import os
-
     assert os.environ["OLLAMA_MODEL"] == "qwen3:4b"
     assert os.environ["OLLAMA_JUDGE_MODEL"] == "qwen3:8b"
     assert os.environ["TELEGRAM_BOT_TOKEN"] == "123:x"
@@ -92,8 +91,6 @@ def test_load_dotenv_never_overrides_real_environ(
 
     load_dotenv_into_environ(env_file)
 
-    import os
-
     assert os.environ["OLLAMA_MODEL"] == "from-environ"
 
 
@@ -101,7 +98,5 @@ def test_load_dotenv_missing_file_is_noop(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.delenv("OLLAMA_MODEL", raising=False)
 
     load_dotenv_into_environ(tmp_path / "absent.env")
-
-    import os
 
     assert "OLLAMA_MODEL" not in os.environ

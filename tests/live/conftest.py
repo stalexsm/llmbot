@@ -23,11 +23,6 @@ _DEFAULT_NUM_CTX = 8192
 _DEFAULT_TIMEOUT_SECONDS = 120.0
 _TRUTHY = {"1", "true", "yes", "on"}
 
-# Живые тесты читают конфигурацию прямо из окружения, поэтому .env
-# композиционного корня подгружается до сбора тестов; приоритет — у
-# настоящего экспорта.
-load_dotenv_into_environ(_REPO_ROOT / ".env")
-
 
 def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     """Все тесты под tests/live — живые: отсечка дефолтным прогоном по маркеру."""
@@ -39,7 +34,14 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
 @pytest.fixture
 async def live_ollama() -> AsyncIterator[LiveOllama]:
     """Живой Ollama по настройкам окружения; недоступен — тест скипается."""
-    base_url = os.environ.get("OLLAMA_BASE_URL", _DEFAULT_BASE_URL)
+    # .env подгружается в фикстуре, а не на импорте conftest: мутация
+    # os.environ не задевает офлайн-тесты дефолтного прогона; приоритет —
+    # у настоящего экспорта.
+    load_dotenv_into_environ(_REPO_ROOT / ".env")
+    # Пустое значение считаем не заданным: живой тест скипается по
+    # доступности сервера, а не падает на парсинге пустой строки из .env.
+    base_url = os.environ.get("OLLAMA_BASE_URL") or _DEFAULT_BASE_URL
+    timeout_seconds = float(os.environ.get("OLLAMA_TIMEOUT_SECONDS") or _DEFAULT_TIMEOUT_SECONDS)
     probe = httpx.AsyncClient(timeout=2.0, trust_env=False)
     try:
         models = await ollama_models(probe, base_url)
@@ -48,23 +50,16 @@ async def live_ollama() -> AsyncIterator[LiveOllama]:
     if models is None:
         pytest.skip(f"Ollama недоступен по адресу {base_url}: живой тест пропущен")
 
-    client = httpx.AsyncClient(
-        timeout=httpx.Timeout(
-            float(os.environ.get("OLLAMA_TIMEOUT_SECONDS", _DEFAULT_TIMEOUT_SECONDS))
-        ),
-        trust_env=False,
-    )
+    client = httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds), trust_env=False)
     try:
         yield LiveOllama(
             client=client,
             base_url=base_url,
             models=models,
-            model=os.environ.get("OLLAMA_MODEL", _DEFAULT_MODEL),
+            model=os.environ.get("OLLAMA_MODEL") or _DEFAULT_MODEL,
             think=os.environ.get("OLLAMA_THINK", "").strip().lower() in _TRUTHY,
-            num_ctx=int(os.environ.get("OLLAMA_NUM_CTX", _DEFAULT_NUM_CTX)),
-            timeout_seconds=float(
-                os.environ.get("OLLAMA_TIMEOUT_SECONDS", _DEFAULT_TIMEOUT_SECONDS)
-            ),
+            num_ctx=int(os.environ.get("OLLAMA_NUM_CTX") or _DEFAULT_NUM_CTX),
+            timeout_seconds=timeout_seconds,
         )
     finally:
         await client.aclose()
