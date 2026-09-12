@@ -42,6 +42,10 @@ _START_TEXT = (
 
 _NEW_CHAT_TEXT = "🆕 Новый чат: история диалога сброшена."
 
+# Валидация ввода: пустая и пробельная реплика не доходит до application —
+# модель и инструменты не тратятся на мусор.
+_EMPTY_INPUT_TEXT = "Сообщение пустое. Напишите вопрос или задачу — я отвечу."
+
 _ERROR_TEXT = "Не удалось получить ответ модели. Попробуйте повторить запрос позже."
 
 # Сбой rag-БД в командах документов: модель не участвовала, поэтому текст —
@@ -149,6 +153,10 @@ class TelegramHandlers:
 
     async def handle_text(self, message: Message) -> None:
         if self._chat_not_allowed(message):
+            return
+        if not (message.text or "").strip():
+            self._logger.info("empty_input_hint_sent", chat_id=message.chat.id)
+            await message.answer(_EMPTY_INPUT_TEXT)
             return
         request = to_user_request(message)
         self._logger.info("message_received", request_id=request.request_id)

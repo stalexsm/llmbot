@@ -17,7 +17,7 @@ from bot.application.documents import DocumentService
 from bot.application.errors import InferenceTimeoutError, InferenceUnavailableError
 from bot.application.models import UserMessageResponse
 from bot.application.service import ApplicationService
-from bot.domain.ids import ModelId, RequestId, TelegramChatId
+from bot.domain.ids import ModelId, RequestId, TelegramChatId, TelegramMessageId, TelegramUserId
 from bot.inference.provider import InferenceProvider
 from bot.sessions.migrations import apply_migrations
 from bot.sessions.store import ChatSessionStore
@@ -328,6 +328,46 @@ async def test_step_limit_receives_honest_stop_message(
 
     # Прогресс шагов в чат не выводится: единственное сообщение — честная остановка.
     assert [call.text for call in sent_messages(request_mock)] == [handlers_module._STEP_LIMIT_TEXT]
+
+
+# --- Валидация ввода ---------------------------------------------------------
+
+
+@pytest.mark.parametrize("text", ["", "   ", "\t\n "])
+async def test_empty_input_gets_hint_without_model_call(
+    bot: Bot,
+    logger: structlog.stdlib.BoundLogger,
+    monkeypatch: MonkeyPatch,
+    text: str,
+) -> None:
+    """Пустой и пробельный ввод не доходит до application: только подсказка."""
+    handlers, service = make_stub_handlers(logger, allowed_chat_ids=frozenset())
+    request_mock = mock_telegram_api(bot, monkeypatch)
+
+    await handlers.handle_text(make_telegram_message(text).as_(bot))
+
+    service.process_message.assert_not_awaited()
+    assert sent_message(request_mock).text == handlers_module._EMPTY_INPUT_TEXT
+
+
+async def test_normal_text_reaches_application_unchanged(
+    bot: Bot,
+    logger: structlog.stdlib.BoundLogger,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    """Обычный текст проходит как раньше: в application без изменений."""
+    handlers, service = make_stub_handlers(logger, allowed_chat_ids=frozenset())
+    request_mock = mock_telegram_api(bot, monkeypatch)
+
+    await handlers.handle_text(make_telegram_message("Привет").as_(bot))
+
+    service.process_message.assert_awaited_once()
+    request = service.process_message.await_args.args[0]
+    assert request.text == "Привет"
+    assert request.user_id == TelegramUserId(7)
+    assert request.chat_id == TelegramChatId(100)
+    assert request.message_id == TelegramMessageId(42)
+    assert sent_message(request_mock).text == "Ответ модели"
 
 
 # --- Allowlist чатов ---------------------------------------------------------
