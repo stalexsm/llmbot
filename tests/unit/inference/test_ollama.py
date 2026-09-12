@@ -448,6 +448,43 @@ async def test_tool_call_arguments_as_json_string_are_accepted(
     assert response.tool_calls[0].arguments == '{"command": "ls"}'
 
 
+@pytest.mark.parametrize(
+    "arguments_payload",
+    [
+        pytest.param(None, id="arguments_key_absent"),
+        pytest.param({}, id="arguments_empty_dict"),
+    ],
+)
+async def test_tool_call_with_empty_arguments_yields_empty_json_object(
+    logger: structlog.stdlib.BoundLogger,
+    arguments_payload: dict[str, object] | None,
+) -> None:
+    # Вызов без параметров: arguments может отсутствовать (поле необязательное)
+    # или быть пустым объектом — домен в обоих случаях получает пустую JSON-строку.
+    async def handler(request: httpx.Request) -> httpx.Response:
+        function: dict[str, object] = {"name": "exec"}
+        if arguments_payload is not None:
+            function["arguments"] = arguments_payload
+        return httpx.Response(
+            200,
+            json={
+                "message": {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"function": function}],
+                },
+                "done": True,
+            },
+        )
+
+    client, provider = make_provider(logger, handler)
+
+    async with client:
+        response = await provider.generate(make_request())
+
+    assert response.tool_calls == (ToolCall(name=ToolId("exec"), arguments="{}"),)
+
+
 async def test_thinking_tags_are_stripped_from_content(
     logger: structlog.stdlib.BoundLogger,
 ) -> None:
