@@ -11,6 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import httpx
+import structlog
+
+from bot.inference.ollama import OllamaInferenceProvider
 
 
 def load_dotenv_into_environ(path: Path) -> None:
@@ -62,3 +65,22 @@ class LiveOllama:
     think: bool
     num_ctx: int
     timeout_seconds: float
+
+
+def inference_provider(
+    live: LiveOllama,
+    logger: structlog.stdlib.BoundLogger,
+) -> OllamaInferenceProvider:
+    """Живой провайдер инференса поверх клиента фикстуры ``live_ollama``.
+
+    Одна фабрика для всех живых тестов, чтобы настройки подключения
+    (таймаут, think, num_ctx) не расползались между тестами.
+    """
+    return OllamaInferenceProvider(
+        client=live.client,
+        base_url=live.base_url,
+        timeout_seconds=live.timeout_seconds,
+        logger=logger,
+        think=live.think,
+        num_ctx=live.num_ctx,
+    )

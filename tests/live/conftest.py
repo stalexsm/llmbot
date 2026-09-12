@@ -1,4 +1,4 @@
-"""Каркас живых тестов: маркер live, загрузка .env и фикстура живого Ollama.
+"""Каркас живых тестов: маркер live, загрузка .env и фикстуры живого Ollama.
 
 Каждый тест под ``tests/live`` автоматически получает маркер ``live`` —
 дефолтный прогон (``-m "not live"``) его не запускает; явный запуск —
@@ -7,13 +7,27 @@
 """
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 import httpx
 import pytest
+import structlog
+import structlog.stdlib
+from pydantic import SecretStr
 
-from tests.live.support import LiveOllama, load_dotenv_into_environ, ollama_models
+from bot.agent.loop import AgentLoop
+from bot.config.settings import Settings
+from bot.domain.ids import TelegramChatId
+from bot.sessions.migrations import apply_migrations
+from bot.sessions.store import ChatSessionStore
+from tests.live.harness import HeadlessChat, build_agent_loop
+from tests.live.support import (
+    LiveOllama,
+    inference_provider,
+    load_dotenv_into_environ,
+    ollama_models,
+)
 
 _LIVE_ROOT = Path(__file__).resolve().parent
 _REPO_ROOT = _LIVE_ROOT.parent.parent
@@ -29,6 +43,65 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
     for item in items:
         if _LIVE_ROOT in item.path.parents:
             item.add_marker(pytest.mark.live)
+
+
+@pytest.fixture
+def live_settings() -> Settings:
+    """Настройки агента из окружения, без требования Telegram-токена.
+
+    Живым тестам от Settings нужны только ручки агентного графа (лимит шагов,
+    exec, окно истории); токен подменяется — Telegram из живых тестов не
+    поднимается. Файл .env не читается: к моменту запроса этой фикстуры
+    тест уже зависит от ``live_ollama`` (напрямую или через ``live_agent``),
+    а она разложила .env по окружению.
+    """
+    return Settings(telegram_bot_token=SecretStr("live-tests"), _env_file=None)
+
+
+@pytest.fixture
+def live_agent(
+    live_ollama: LiveOllama,
+    live_settings: Settings,
+    logger: structlog.stdlib.BoundLogger,
+) -> AgentLoop:
+    """Агентный цикл headless против живого Ollama — граф как у бенчмарка."""
+    return build_agent_loop(
+        inference=inference_provider(live_ollama, logger),
+        model=live_ollama.model,
+        skills_directory=_REPO_ROOT / live_settings.agent_skills_directory,
+        repo_root=_REPO_ROOT,
+        settings=live_settings,
+        logger=logger,
+    )
+
+
+@pytest.fixture
+def headless_chat_factory(
+    live_agent: AgentLoop,
+    live_settings: Settings,
+    tmp_path: Path,
+    logger: structlog.stdlib.BoundLogger,
+) -> Callable[[str], HeadlessChat]:
+    """Фабрика headless-чатов с чат-сессией во временной БД.
+
+    БД одна на тест (то есть на кейс — параметризованный тест даёт каждому
+    кейсу свой ``tmp_path``); метка чата — идентификатор кейса: по нему
+    собираются request_id запусков.
+    """
+    database = tmp_path / "chats.db"
+    apply_migrations(database)
+    store = ChatSessionStore(database=database, logger=logger)
+
+    def create(label: str) -> HeadlessChat:
+        return HeadlessChat(
+            agent=live_agent,
+            store=store,
+            chat_id=TelegramChatId(700),
+            label=label,
+            history_limit=live_settings.agent_history_max_messages,
+        )
+
+    return create
 
 
 @pytest.fixture
