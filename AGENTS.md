@@ -16,7 +16,7 @@ Route each task to the narrowest source; this is an index, not documentation.
 - `src/bot/` — layered code: `telegram/` → `application/` → `agent/` → `inference/` (Ollama adapter), plus `domain/`, `rag/`, `sessions/`, `config/`; `main.py` is the composition root.
 - `docs/architecture.md` — layer boundaries, DI, cross-layer errors; `docs/code-style.md` — typing and modeling; `docs/runtime.md` — settings, logging, timeouts, secrets.
 - `CONTEXT.md` + `docs/adr/` — domain glossary and decisions; read before exploring an area.
-- `docs/agents/` — issue tracker (`.scratch/<feature>/`), triage labels, domain-docs workflow.
+- `docs/agents/` — issue tracker (GitHub Issues), triage labels, domain-docs workflow.
 - `tests/unit/`, `tests/integration/` — verification; `tests/fakes.py` fakes `InferenceProvider` (no Ollama needed).
 - `skills/<name>/SKILL.md` — the bot's runtime skills; `env.example` — configuration reference.
 
@@ -29,7 +29,7 @@ Example: a layer-boundary change routes to `docs/architecture.md`; a new setting
 3. Expand only as needed to imports, callers, and tests; stop when evidence is sufficient.
 4. Do not inventory the repository; `README.md` already maps the structure.
 
-Deny by default unless required: `.env`, `.venv/`, `.data/`, caches, build output, `uv.lock`, and logs; enter `.scratch/` only for issue-tracker work.
+Deny by default unless required: `.env`, `.venv/`, `.data/`, caches, build output, `uv.lock`, and logs.
 
 ## Project-Specific Rules
 
@@ -48,7 +48,7 @@ Example: a chat-history bug → search `src/bot/sessions/` for `window|history` 
 
 ### Issue tracker
 
-Issues are tracked as local markdown files under `.scratch/`. See `docs/agents/issue-tracker.md`.
+Issues are tracked in the repo's GitHub Issues via the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
