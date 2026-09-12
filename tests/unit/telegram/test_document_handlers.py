@@ -25,6 +25,7 @@ from bot.application.errors import (
 )
 from bot.domain.ids import DocumentId, TelegramUserId
 from bot.rag.models import DocumentInfo, DocumentKind
+from bot.telegram.formatter import escape_markdown_v2
 from bot.telegram.handlers import TelegramHandlers
 from bot.telegram.loader import DocumentLoader
 from tests.fakes import make_rag_service, make_telegram_message, mock_telegram_api
@@ -103,7 +104,7 @@ async def test_document_acknowledges_then_reports_ready(
     methods = sent_methods(request_mock)
     # Первое — мгновенное подтверждение; последнее — правка статуса в «готово».
     assert isinstance(methods[0], SendMessage)
-    assert "Документ получен: doc.txt" in (methods[0].text or "")
+    assert escape_markdown_v2("Документ получен: doc.txt") in (methods[0].text or "")
     assert isinstance(methods[-1], EditMessageText)
     assert "Документ готов" in (methods[-1].text or "")
     # Индексация — под владельцем с границы Telegram-слоя.
@@ -175,7 +176,7 @@ async def test_unsupported_format_becomes_friendly_error(
 
     last = sent_methods(request_mock)[-1]
     assert isinstance(last, EditMessageText)
-    assert ".txt, .md, .pdf" in (last.text or "")
+    assert escape_markdown_v2(".txt, .md, .pdf") in (last.text or "")
 
 
 @pytest.mark.parametrize(
@@ -204,7 +205,7 @@ async def test_indexing_errors_map_to_friendly_texts(
 
     last = sent_methods(request_mock)[-1]
     assert isinstance(last, EditMessageText)
-    assert fragment in (last.text or "")
+    assert escape_markdown_v2(fragment) in (last.text or "")
 
 
 async def test_download_failure_is_reported_without_indexing(
@@ -245,7 +246,7 @@ async def test_documents_command_lists_owner_corpus(
     sent = sent_methods(request_mock)
     assert len(sent) == 1
     assert isinstance(sent[0], SendMessage)
-    assert "handbook.txt" in sent[0].text
+    assert escape_markdown_v2("handbook.txt") in sent[0].text
 
 
 async def test_documents_command_reports_empty_corpus(
@@ -277,7 +278,7 @@ async def test_delete_removes_document_and_confirms(
     assert args[1] == "doc.txt"
     sent = sent_methods(request_mock)[0]
     assert isinstance(sent, SendMessage)
-    assert "Документ удалён: doc.txt" in sent.text
+    assert escape_markdown_v2("Документ удалён: doc.txt") in sent.text
 
 
 async def test_delete_without_argument_shows_usage(
@@ -323,7 +324,7 @@ async def test_delete_unknown_name_answers_with_corpus_list(
     sent = sent_methods(request_mock)[0]
     assert isinstance(sent, SendMessage)
     assert "не найден" in sent.text
-    assert "handbook.txt" in sent.text
+    assert escape_markdown_v2("handbook.txt") in sent.text
 
 
 async def test_clear_wipes_corpus_and_reports_count(

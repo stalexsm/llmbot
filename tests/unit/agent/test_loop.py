@@ -314,6 +314,27 @@ async def test_unknown_tool_returns_error_to_model(
     assert "нетакого" in tool_result.content
 
 
+async def test_broken_json_arguments_become_graceful_error(
+    logger: structlog.stdlib.BoundLogger, tmp_path: Path
+) -> None:
+    provider = ScriptedInferenceProvider(
+        [tool_call_response("execute_command", "{битый json"), final_response("Исправлю команду")]
+    )
+    loop = make_loop(logger, provider, tmp_path)
+    progress = RecordingProgress()
+
+    run = await loop.run(RequestId(str(uuid4())), (), USER, progress)
+
+    assert run.final_answer == "Исправлю команду"
+    # Команда не выполнялась: битый JSON превращается в graceful-ошибку,
+    # модель получает её результат и цикл доходит до финального ответа.
+    assert progress.events == []
+    tool_result = provider.requests[1].messages[3]
+    assert tool_result.tool_name == ToolId("execute_command")
+    assert "invalid tool arguments" in tool_result.content
+    assert run.failed_tool_results == 1
+
+
 async def test_history_precedes_user_message(
     logger: structlog.stdlib.BoundLogger, tmp_path: Path
 ) -> None:

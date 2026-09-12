@@ -312,8 +312,28 @@ uv run ty check                  # проверка типов
 uv run ruff check .              # линтер
 uv run ruff format --check .     # форматирование
 uv run pytest                    # тесты (Ollama и Telegram не требуются)
+uv run pytest -m live            # живые тесты против настоящего Ollama (без него — скип)
 uv run python -m bot.evaluation  # RAG evaluation против живого Ollama (пропуск без него)
 ```
+
+### Живые тесты
+
+Живые тесты (`tests/live/`, маркер `live`) гоняют настоящего агента против
+работающего Ollama и из дефолтного прогона исключены: без запущенного сервера
+они скипаются, а не падают. Модель и режим берутся из окружения (`.env`:
+`OLLAMA_MODEL`, `OLLAMA_THINK`, `OLLAMA_NUM_CTX`); для RAG-smoke нужна модель
+эмбеддингов (`ollama pull bge-m3`), для судьи — `OLLAMA_JUDGE_MODEL`
+(по умолчанию основная модель).
+
+```bash
+uv run pytest -m live                               # все живые тесты
+uv run pytest -m live tests/live/test_behavioral.py # поведенческий датасет (13 кейсов)
+uv run pytest -m live tests/live/test_sla.py        # один файл
+```
+
+Состав: смоук провайдера и RAG-ядра, поведенческий датасет (джейлбрейк,
+отказ от выдумок, память диалога), судья качества свободных ответов
+(LLM-as-a-Judge) и SLA-тест задержки.
 
 ## Структура проекта
 
@@ -387,7 +407,8 @@ skills/weather/SKILL.md  # первый скилл: погода через wttr
 .data/metrics/           # метрики токенов events.jsonl (исключён из git)
 tests/
 ├── unit/                # сервис, цикл, exec, скиллы, сессии, rag, адаптер Ollama, хендлеры
-└── integration/         # полный цикл Telegram → приложение → агент (без сети) + живой smoke RAG
+├── integration/         # полный цикл Telegram → приложение → агент (без сети)
+└── live/                # живые тесты против настоящего Ollama (маркер live, из дефолта исключены)
 ```
 
 ## Логирование

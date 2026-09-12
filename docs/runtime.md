@@ -40,6 +40,16 @@
   в `/api/chat` как `options.num_ctx` и перекрывает дефолт сервера Ollama
   (`OLLAMA_CONTEXT_LENGTH`, обычно 4096). Размер окна напрямую влияет на
   память под KV-кэш.
+- Живые тесты (`tests/live`, маркер `live`) читают конфигурацию напрямую из
+  env плюс `.env` корня репозитория (приоритет — у настоящего экспорта), в
+  обход `Settings`: сервер и модель — `OLLAMA_BASE_URL`, `OLLAMA_MODEL`,
+  `OLLAMA_THINK`, `OLLAMA_NUM_CTX`; модель-судья живых тестов качества —
+  `OLLAMA_JUDGE_MODEL` (пусто — судит `OLLAMA_MODEL`); SLA-порог задержки —
+  `OLLAMA_LATENCY_SECONDS` (по умолчанию 4). В дефолтный прогон живые тесты
+  не попадают (`addopts = -m "not live"` в `pyproject.toml`), явный запуск —
+  `uv run pytest -m live`; без работающего Ollama живой тест скипается.
+  Репорт SLA-теста задержки (полное время и прокси-TTFT) виден в выводе
+  с `-s` (`uv run pytest -m live -s`) и при падении теста — в сообщении ассерта.
 - БД чат-сессий фиксирована кодом — `.data/chats.db` (ADR-0003) и исключена
   из Git: в свежем клоне её нет. Схема — только миграции alembic: новая
   ревизия создаётся `uv run alembic revision --autogenerate -m "..." --rev-id <имя>`

@@ -10,10 +10,10 @@
 import time
 
 import structlog
-from aiogram.exceptions import TelegramAPIError
 from aiogram.types import Message
 
 from bot.application.progress import IndexingStage
+from bot.telegram.sending import edit_formatted
 
 
 class TelegramIndexProgress:
@@ -57,10 +57,8 @@ class TelegramIndexProgress:
         now = time.monotonic()
         if not force and now - self._last_edit < self._min_interval:
             return
-        try:
-            await self._status.edit_text(text)
-        except TelegramAPIError:
-            # Правка невозможна (сообщение устарело/удалено) — новое сообщение.
+        previous, self._status = self._status, await edit_formatted(self._status, text)
+        if self._status is not previous:
+            # Правка невозможна (сообщение устарело/удалено) — ушло новое сообщение.
             self._logger.info("index_status_edit_failed", status="fallback_new_message")
-            self._status = await self._status.answer(text)
         self._last_edit = time.monotonic()
