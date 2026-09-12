@@ -4,13 +4,13 @@
 (``ollama pull bge-m3``); без сервера или без модели тест пропускается —
 гейты остаются зелёными офлайн. Проверяет полный путь тикета 02:
 реальные эмбеддинги → rag-БД (tmp-файл) → поиск с порогом близости.
+
+Живой тест (маркер ``live`` ставится конфтестом tests/live автоматически);
+доступность сервера проверяет общая фикстура ``live_ollama``.
 """
 
-import os
-from collections.abc import AsyncIterator
 from pathlib import Path
 
-import httpx
 import pytest
 import structlog
 import structlog.stdlib
@@ -20,6 +20,7 @@ from bot.inference.embeddings_ollama import OllamaEmbeddingProvider
 from bot.rag.migrations import apply_migrations
 from bot.rag.service import RagService
 from bot.rag.store import RagStore
+from tests.live.support import LiveOllama
 
 _OWNER = TelegramUserId(42)
 _REQUEST_ID = RequestId("rag-smoke")
@@ -70,46 +71,30 @@ _RELEVANT_QUERY = "сколько дней отпуска положено со�
 _IRRELEVANT_QUERY = "расписание поездов до Владивостока"
 
 
-def _base_url() -> str:
-    return os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
-
-
 @pytest.fixture
-async def embeddings(
+def embeddings(
+    live_ollama: LiveOllama,
     logger: structlog.stdlib.BoundLogger,
-) -> AsyncIterator[tuple[OllamaEmbeddingProvider, httpx.AsyncClient]] | None:
-    """Живой провайдер эмбеддингов; без Ollama или без bge-m3 — пропуск."""
-    url = _base_url()
-    try:
-        async with httpx.AsyncClient(timeout=2.0, trust_env=False) as client:
-            response = await client.get(f"{url}/api/tags")
-            models = [model.get("name", "") for model in response.json().get("models", [])]
-    except (httpx.HTTPError, ValueError):
-        pytest.skip(f"Ollama is not reachable at {url}")
-    if not any(name.startswith("bge-m3") for name in models):
+) -> OllamaEmbeddingProvider:
+    """Живой провайдер эмбеддингов; без bge-m3 — свой скип, без Ollama — скип фикстуры."""
+    if not any(name.startswith("bge-m3") for name in live_ollama.models):
         pytest.skip("bge-m3 model is not pulled: run `ollama pull bge-m3`")
     # Дефолт настройки OLLAMA_EMBED_TIMEOUT_SECONDS: живая модель на
     # локальной машине укладывается с запасом.
-    http_client = httpx.AsyncClient(trust_env=False)
-    provider = OllamaEmbeddingProvider(
-        client=http_client,
-        base_url=url,
+    return OllamaEmbeddingProvider(
+        client=live_ollama.client,
+        base_url=live_ollama.base_url,
         timeout_seconds=120.0,
         logger=logger,
     )
-    try:
-        yield provider, http_client
-    finally:
-        await http_client.aclose()
 
 
 async def test_live_index_and_search_with_bge_m3(
     tmp_path: Path,
     logger: structlog.stdlib.BoundLogger,
-    embeddings: tuple[OllamaEmbeddingProvider, httpx.AsyncClient] | None,
+    embeddings: OllamaEmbeddingProvider,
 ) -> None:
-    assert embeddings is not None  # гарантия фикстуры после skip
-    provider, _http_client = embeddings
+    provider = embeddings
     database = tmp_path / "rag.db"
     apply_migrations(database)
     service = RagService(

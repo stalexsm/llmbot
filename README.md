@@ -312,6 +312,7 @@ uv run ty check                  # проверка типов
 uv run ruff check .              # линтер
 uv run ruff format --check .     # форматирование
 uv run pytest                    # тесты (Ollama и Telegram не требуются)
+uv run pytest -m live            # живые тесты против настоящего Ollama (без него — скип)
 uv run python -m bot.evaluation  # RAG evaluation против живого Ollama (пропуск без него)
 ```
 
@@ -387,7 +388,8 @@ skills/weather/SKILL.md  # первый скилл: погода через wttr
 .data/metrics/           # метрики токенов events.jsonl (исключён из git)
 tests/
 ├── unit/                # сервис, цикл, exec, скиллы, сессии, rag, адаптер Ollama, хендлеры
-└── integration/         # полный цикл Telegram → приложение → агент (без сети) + живой smoke RAG
+├── integration/         # полный цикл Telegram → приложение → агент (без сети)
+└── live/                # живые тесты против настоящего Ollama (маркер live, из дефолта исключены)
 ```
 
 ## Логирование

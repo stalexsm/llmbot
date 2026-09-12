@@ -35,6 +35,13 @@ packages = ["src/bot"]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+# Живые тесты против настоящего Ollama (tests/live, маркер live) из дефолтного
+# прогона исключены: гейты зелёные без запущенной модели. Явный запуск —
+# `uv run pytest -m live` (поздний -m из CLI перекрывает addopts).
+addopts = '-m "not live"'
+markers = [
+    "live: живой тест против настоящего Ollama; по умолчанию исключён, запуск: uv run pytest -m live",
+]
 
 [tool.ruff]
 target-version = "py313"
