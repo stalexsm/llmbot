@@ -48,6 +48,8 @@
   `OLLAMA_LATENCY_SECONDS` (по умолчанию 4). В дефолтный прогон живые тесты
   не попадают (`addopts = -m "not live"` в `pyproject.toml`), явный запуск —
   `uv run pytest -m live`; без работающего Ollama живой тест скипается.
+  Репорт SLA-теста задержки (полное время и прокси-TTFT) виден в выводе
+  с `-s` (`uv run pytest -m live -s`) и при падении теста — в сообщении ассерта.
 - БД чат-сессий фиксирована кодом — `.data/chats.db` (ADR-0003) и исключена
   из Git: в свежем клоне её нет. Схема — только миграции alembic: новая
   ревизия создаётся `uv run alembic revision --autogenerate -m "..." --rev-id <имя>`
