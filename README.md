@@ -316,6 +316,25 @@ uv run pytest -m live            # живые тесты против насто
 uv run python -m bot.evaluation  # RAG evaluation против живого Ollama (пропуск без него)
 ```
 
+### Живые тесты
+
+Живые тесты (`tests/live/`, маркер `live`) гоняют настоящего агента против
+работающего Ollama и из дефолтного прогона исключены: без запущенного сервера
+они скипаются, а не падают. Модель и режим берутся из окружения (`.env`:
+`OLLAMA_MODEL`, `OLLAMA_THINK`, `OLLAMA_NUM_CTX`); для RAG-smoke нужна модель
+эмбеддингов (`ollama pull bge-m3`), для судьи — `OLLAMA_JUDGE_MODEL`
+(по умолчанию основная модель).
+
+```bash
+uv run pytest -m live                               # все живые тесты
+uv run pytest -m live tests/live/test_behavioral.py # поведенческий датасет (13 кейсов)
+uv run pytest -m live tests/live/test_sla.py        # один файл
+```
+
+Состав: смоук провайдера и RAG-ядра, поведенческий датасет (джейлбрейк,
+отказ от выдумок, память диалога), судья качества свободных ответов
+(LLM-as-a-Judge) и SLA-тест задержки.
+
 ## Структура проекта
 
 ```text
