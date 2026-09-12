@@ -70,16 +70,20 @@ class LiveOllama:
 def inference_provider(
     live: LiveOllama,
     logger: structlog.stdlib.BoundLogger,
+    *,
+    timeout_seconds: float | None = None,
 ) -> OllamaInferenceProvider:
     """Живой провайдер инференса поверх клиента фикстуры ``live_ollama``.
 
     Одна фабрика для всех живых тестов, чтобы настройки подключения
-    (таймаут, think, num_ctx) не расползались между тестами.
+    (таймаут, think, num_ctx) не расползались между тестами; тест с особыми
+    требованиями к таймауту (судья с длинным вердиктом) перекрывает только
+    его — клиент фикстуры передаёт таймаут на каждый запрос.
     """
     return OllamaInferenceProvider(
         client=live.client,
         base_url=live.base_url,
-        timeout_seconds=live.timeout_seconds,
+        timeout_seconds=live.timeout_seconds if timeout_seconds is None else timeout_seconds,
         logger=logger,
         think=live.think,
         num_ctx=live.num_ctx,
