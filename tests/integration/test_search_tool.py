@@ -35,6 +35,7 @@ from bot.metrics.tool import MeteredTool
 from bot.rag.service import RagService
 from bot.sessions.migrations import apply_migrations
 from bot.sessions.store import ChatSessionStore
+from bot.telegram.formatter import escape_markdown_v2
 from bot.telegram.handlers import TelegramHandlers
 from bot.telegram.loader import DocumentLoader
 from tests.fakes import (
@@ -188,9 +189,8 @@ async def test_question_routes_to_search_and_answer_cites_source(
     assert "Источник: reglament.txt" in tool_message.content
     assert "28 календарных дней" in tool_message.content
     # Пользователь получает ответ с Источником.
-    assert (
-        sent_reply(request_mock).text
-        == "Ежегодный отпуск — 28 календарных дней.\n\nИсточник: reglament.txt"
+    assert sent_reply(request_mock).text == escape_markdown_v2(
+        "Ежегодный отпуск — 28 календарных дней.\n\nИсточник: reglament.txt"
     )
     # Метрики: поиск записан событием tool_call без содержимого запроса.
     events = tool_call_events(tmp_path)
@@ -232,7 +232,9 @@ async def test_off_corpus_question_gets_honest_not_found(
     # Инструмент вернул явное «не найдено», модель ответила честно.
     tool_message = provider.requests[2].messages[3]
     assert "ничего не найдено" in tool_message.content.lower()
-    assert sent_reply(request_mock).text == "Я не нашёл ответа на этот вопрос в ваших документах."
+    assert sent_reply(request_mock).text == escape_markdown_v2(
+        "Я не нашёл ответа на этот вопрос в ваших документах."
+    )
 
 
 async def test_second_owner_never_sees_first_owner_chunks(
@@ -271,7 +273,9 @@ async def test_second_owner_never_sees_first_owner_chunks(
     tool_message = provider.requests[2].messages[3]
     assert "ничего не найдено" in tool_message.content.lower()
     assert "28 календарных дней" not in tool_message.content
-    assert sent_reply(request_mock).text == "Я не нашёл ответа на этот вопрос в ваших документах."
+    assert sent_reply(request_mock).text == escape_markdown_v2(
+        "Я не нашёл ответа на этот вопрос в ваших документах."
+    )
 
 
 async def test_pronoun_followup_finds_chunks_after_rewrite(
@@ -345,7 +349,7 @@ async def test_pronoun_followup_finds_chunks_after_rewrite(
     assert "28 календарных дней" in tool_message.content
     assert "Источник: reglament.txt" in tool_message.content
     # Пользователь получил ответ с Источником; вызовы поиска — в метриках.
-    assert "Источник: reglament.txt" in sent_reply(request_mock).text
+    assert escape_markdown_v2("Источник: reglament.txt") in sent_reply(request_mock).text
     assert [event["tool_name"] for event in tool_call_events(tmp_path)] == [
         "search_documents",
         "search_documents",
@@ -386,7 +390,9 @@ async def test_raw_pronoun_query_without_rewrite_finds_nothing(
     # Пасsthrough-переписывание: сырой запрос ушёл в поиск как есть — мимо корпуса.
     tool_message = provider.requests[1].messages[3]
     assert "ничего не найдено" in tool_message.content.lower()
-    assert sent_reply(request_mock).text == "Я не нашёл ответа на этот вопрос в ваших документах."
+    assert sent_reply(request_mock).text == escape_markdown_v2(
+        "Я не нашёл ответа на этот вопрос в ваших документах."
+    )
 
 
 async def test_rewrite_failure_searches_raw_and_user_gets_answer(
@@ -427,7 +433,7 @@ async def test_rewrite_failure_searches_raw_and_user_gets_answer(
     # запросу и нашёл чанк; пользователь ответ получил.
     tool_message = scripted.requests[1].messages[3]
     assert "28 календарных дней" in tool_message.content
-    assert "Источник: reglament.txt" in sent_reply(request_mock).text
+    assert escape_markdown_v2("Источник: reglament.txt") in sent_reply(request_mock).text
     # Сбой переписывания отмечен в логе без содержимого запроса.
     assert any(
         call.kwargs.get("event") == "query_rewrite_failed" for call in capturing_logger.calls

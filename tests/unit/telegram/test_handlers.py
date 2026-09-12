@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 import structlog.stdlib
 from aiogram import Bot
-from aiogram.enums import ChatAction
+from aiogram.enums import ChatAction, ParseMode
 from aiogram.methods import SendChatAction, SendMessage
 from pytest import MonkeyPatch
 
@@ -21,6 +21,7 @@ from bot.domain.ids import ModelId, RequestId, TelegramChatId, TelegramMessageId
 from bot.inference.provider import InferenceProvider
 from bot.sessions.migrations import apply_migrations
 from bot.sessions.store import ChatSessionStore
+from bot.telegram.formatter import escape_markdown_v2
 from bot.telegram.handlers import TelegramHandlers
 from bot.telegram.loader import DocumentLoader
 from tests.fakes import (
@@ -32,6 +33,7 @@ from tests.fakes import (
     final_response,
     make_telegram_message,
 )
+from tests.unit.telegram.markdown_v2 import assert_valid_markdown_v2
 
 
 def make_session_store(directory: Path, logger: structlog.stdlib.BoundLogger) -> ChatSessionStore:
@@ -135,7 +137,7 @@ async def test_start_answers_with_greeting(
     message = make_telegram_message("/start").as_(bot)
     await handlers.handle_start(message)
 
-    assert sent_message(request_mock).text == handlers_module._START_TEXT
+    assert sent_message(request_mock).text == escape_markdown_v2(handlers_module._START_TEXT)
 
 
 async def test_new_command_resets_session_and_confirms(
@@ -154,7 +156,7 @@ async def test_new_command_resets_session_and_confirms(
 
     await handlers.handle_new(make_telegram_message("/new").as_(bot))
 
-    assert sent_message(request_mock).text == handlers_module._NEW_CHAT_TEXT
+    assert sent_message(request_mock).text == escape_markdown_v2(handlers_module._NEW_CHAT_TEXT)
     sessions = make_session_store(tmp_path, logger)
     assert sessions.load(TelegramChatId(100)) == ()
     # Следующее сообщение не видит сброшенной истории (только системный промпт + вопрос).
@@ -173,7 +175,38 @@ async def test_text_message_returns_model_response(
     await handlers.handle_text(message)
 
     assert sent_message(request_mock).text == "Ответ модели"
+    assert sent_message(request_mock).parse_mode == ParseMode.MARKDOWN_V2
     assert len(provider.requests) == 1
+
+
+async def test_broken_markup_is_sent_escaped_without_error(
+    bot: Bot, logger: structlog.stdlib.BoundLogger, monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    """Битая разметка во входе и в фейковом ответе уходит без ошибки отправки.
+
+    Спецсимволы и незакрытый код-блок в ответе экранируются, каждая часть
+    несёт parse_mode MarkdownV2 и остаётся в лимите Telegram.
+    """
+    response = (
+        "Жирный _текст_ и [ссылка](https://x.ru).\n"
+        "```незакрытый блок\n2 * 2 = 4.\nСимволы: ` > # + - = | { } !"
+    )
+    broken_input = "Привет *мир*! [битая](разметка _иagain_"
+    provider = MockInferenceProvider(response_content=response)
+    handlers = make_handlers(logger, make_service(logger, provider, tmp_path))
+    request_mock = mock_telegram_api(bot, monkeypatch)
+
+    message = make_telegram_message(broken_input).as_(bot)
+    await handlers.handle_text(message)
+
+    sent = sent_messages(request_mock)
+    assert sent
+    assert all(part.parse_mode == ParseMode.MARKDOWN_V2 for part in sent)
+    assert all(len(part.text or "") <= 4096 for part in sent)
+    for part in sent:
+        assert_valid_markdown_v2(part.text or "")
+    # Ввод дошёл до модели как есть: экранирование — только на исходящей стороне.
+    assert provider.requests[0].messages[-1].content == broken_input
 
 
 def _typing_actions(request_mock: AsyncMock) -> list[SendChatAction]:
@@ -217,7 +250,7 @@ async def test_typing_action_sent_even_when_inference_fails(
     await handlers.handle_text(message)
 
     assert _typing_actions(request_mock)
-    assert sent_message(request_mock).text == handlers_module._ERROR_TEXT
+    assert sent_message(request_mock).text == escape_markdown_v2(handlers_module._ERROR_TEXT)
 
 
 @pytest.mark.parametrize(
@@ -239,7 +272,7 @@ async def test_application_error_converted_to_safe_message(
     message = make_telegram_message("Привет").as_(bot)
     await handlers.handle_text(message)
 
-    assert sent_message(request_mock).text == handlers_module._ERROR_TEXT
+    assert sent_message(request_mock).text == escape_markdown_v2(handlers_module._ERROR_TEXT)
 
 
 async def test_router_routes_new_command_to_reset(
@@ -270,7 +303,7 @@ async def test_router_routes_new_command_to_reset(
     )
     await dispatcher.feed_update(bot, update)
 
-    assert sent_message(request_mock).text == handlers_module._NEW_CHAT_TEXT
+    assert sent_message(request_mock).text == escape_markdown_v2(handlers_module._NEW_CHAT_TEXT)
 
 
 async def test_new_command_failure_converted_to_safe_message(
@@ -290,7 +323,7 @@ async def test_new_command_failure_converted_to_safe_message(
 
     await handlers.handle_new(make_telegram_message("/new").as_(bot))  # must not raise
 
-    assert sent_message(request_mock).text == handlers_module._ERROR_TEXT
+    assert sent_message(request_mock).text == escape_markdown_v2(handlers_module._ERROR_TEXT)
 
 
 async def test_command_execution_sends_only_final_answer(
@@ -327,7 +360,9 @@ async def test_step_limit_receives_honest_stop_message(
     await handlers.handle_text(make_telegram_message("зациклись").as_(bot))
 
     # Прогресс шагов в чат не выводится: единственное сообщение — честная остановка.
-    assert [call.text for call in sent_messages(request_mock)] == [handlers_module._STEP_LIMIT_TEXT]
+    assert [call.text for call in sent_messages(request_mock)] == [
+        escape_markdown_v2(handlers_module._STEP_LIMIT_TEXT)
+    ]
 
 
 # --- Валидация ввода ---------------------------------------------------------
@@ -347,7 +382,7 @@ async def test_empty_input_gets_hint_without_model_call(
     await handlers.handle_text(make_telegram_message(text).as_(bot))
 
     service.process_message.assert_not_awaited()
-    assert sent_message(request_mock).text == handlers_module._EMPTY_INPUT_TEXT
+    assert sent_message(request_mock).text == escape_markdown_v2(handlers_module._EMPTY_INPUT_TEXT)
 
 
 async def test_normal_text_reaches_application_unchanged(
@@ -430,7 +465,7 @@ async def test_filled_allowlist_listed_chat_works_as_before(
     sent = sent_messages(request_mock)
     assert [call.text for call in sent] == [
         "Ответ модели",
-        handlers_module._NEW_CHAT_TEXT,
+        escape_markdown_v2(handlers_module._NEW_CHAT_TEXT),
     ]
 
 

@@ -28,7 +28,7 @@ from bot.rag.models import DocumentInfo
 from bot.telegram.loader import DocumentLoader
 from bot.telegram.mapper import to_user_request
 from bot.telegram.progress import TelegramIndexProgress
-from bot.telegram.splitter import split_long_text
+from bot.telegram.sending import send_formatted
 
 _START_TEXT = (
     "Привет! Я автономный агент на локальной языковой модели (Ollama).\n"
@@ -133,7 +133,7 @@ class TelegramHandlers:
         if self._chat_not_allowed(message):
             return
         self._logger.info("start_command_received", chat_id=message.chat.id)
-        await message.answer(_START_TEXT)
+        await self._answer(message, _START_TEXT)
 
     async def handle_new(self, message: Message) -> None:
         if self._chat_not_allowed(message):
@@ -146,17 +146,17 @@ class TelegramHandlers:
                 chat_id=message.chat.id,
                 status="error",
             )
-            await message.answer(_ERROR_TEXT)
+            await self._answer(message, _ERROR_TEXT)
             return
         self._logger.info("new_command_received", chat_id=message.chat.id)
-        await message.answer(_NEW_CHAT_TEXT)
+        await self._answer(message, _NEW_CHAT_TEXT)
 
     async def handle_text(self, message: Message) -> None:
         if self._chat_not_allowed(message):
             return
         if not (message.text or "").strip():
             self._logger.info("empty_input_hint_sent", chat_id=message.chat.id)
-            await message.answer(_EMPTY_INPUT_TEXT)
+            await self._answer(message, _EMPTY_INPUT_TEXT)
             return
         request = to_user_request(message)
         self._logger.info("message_received", request_id=request.request_id)
@@ -176,15 +176,18 @@ class TelegramHandlers:
                     error=type(exc).__name__,
                     status="error",
                 )
-                await message.answer(_ERROR_TEXT)
+                await self._answer(message, _ERROR_TEXT)
                 return
             text = _STEP_LIMIT_TEXT if response.stopped_by_step_limit else response.text
-            for part in split_long_text(text):
-                await message.answer(part)
+            await self._answer(message, text)
             self._logger.info("reply_sent", request_id=response.request_id, status="success")
         finally:
             typing.cancel()
             await asyncio.gather(typing, return_exceptions=True)
+
+    async def _answer(self, message: Message, text: str) -> None:
+        """Ответ пользователю: единый форматтер (сплит + экранирование), MarkdownV2."""
+        await send_formatted(message, text)
 
     async def _send_typing(self, message: Message) -> None:
         """Один chat action «печатает»; сбой Telegram не влияет на ответ."""
@@ -218,7 +221,7 @@ class TelegramHandlers:
             # Владелец документа — TelegramUserId с границы Telegram-слоя;
             # сообщение без автора не принимается (ADR-0002).
             self._logger.info("document_without_author", chat_id=message.chat.id)
-            await message.answer(_NO_AUTHOR_TEXT)
+            await self._answer(message, _NO_AUTHOR_TEXT)
             return
         owner_id = TelegramUserId(message.from_user.id)
         request_id = RequestId(str(uuid4()))
@@ -228,8 +231,9 @@ class TelegramHandlers:
             owner_id=int(owner_id),
             chat_id=message.chat.id,
         )
-        # Мгновенный ответ: индексация идёт фоновой задачей, чат не блокируется.
-        status = await message.answer(_DOCUMENT_RECEIVED_TEXT.format(name=name))
+        # Мгновенный ответ: индексация идёт фоновой задачей, чат не блокируется;
+        # последнее сообщение становится статусом для правок прогресса.
+        status = await send_formatted(message, _DOCUMENT_RECEIVED_TEXT.format(name=name))
         task = asyncio.create_task(
             self._index_in_background(message, status, owner_id, name, document.file_id, request_id)
         )
@@ -321,12 +325,12 @@ class TelegramHandlers:
             documents = self._documents.list_documents(owner_id)
         except ApplicationError:
             self._logger.error("documents_list_failed", chat_id=message.chat.id, status="error")
-            await message.answer(_STORAGE_ERROR_TEXT)
+            await self._answer(message, _STORAGE_ERROR_TEXT)
             return
         if not documents:
-            await message.answer(_NO_DOCUMENTS_TEXT)
+            await self._answer(message, _NO_DOCUMENTS_TEXT)
             return
-        await message.answer(self._corpus_text(documents))
+        await self._answer(message, self._corpus_text(documents))
 
     async def handle_delete(self, message: Message, command: CommandObject) -> None:
         """Команда /delete: удалить документ по имени, без подтверждения."""
@@ -337,19 +341,19 @@ class TelegramHandlers:
             return
         name = (command.args or "").strip()
         if not name:
-            await message.answer(_DELETE_USAGE_TEXT)
+            await self._answer(message, _DELETE_USAGE_TEXT)
             return
         try:
             self._documents.delete_document(owner_id, name)
         except DocumentNotFoundError:
-            await message.answer(self._not_found_text(owner_id, name))
+            await self._answer(message, self._not_found_text(owner_id, name))
             return
         except ApplicationError:
             self._logger.error("document_delete_failed", chat_id=message.chat.id, status="error")
-            await message.answer(_STORAGE_ERROR_TEXT)
+            await self._answer(message, _STORAGE_ERROR_TEXT)
             return
         self._logger.info("document_deleted", owner_id=int(owner_id))
-        await message.answer(_DOCUMENT_DELETED_TEXT.format(name=name))
+        await self._answer(message, _DOCUMENT_DELETED_TEXT.format(name=name))
 
     async def handle_clear(self, message: Message) -> None:
         """Команда /clear: очистить корпус владельца, без подтверждения."""
@@ -362,19 +366,19 @@ class TelegramHandlers:
             deleted = await self._documents.clear_documents(owner_id)
         except ApplicationError:
             self._logger.error("corpus_clear_failed", chat_id=message.chat.id, status="error")
-            await message.answer(_STORAGE_ERROR_TEXT)
+            await self._answer(message, _STORAGE_ERROR_TEXT)
             return
         self._logger.info("corpus_cleared", owner_id=int(owner_id), documents=deleted)
         if deleted == 0:
-            await message.answer(_NO_DOCUMENTS_TEXT)
+            await self._answer(message, _NO_DOCUMENTS_TEXT)
             return
-        await message.answer(_CORPUS_CLEARED_TEXT.format(count=deleted))
+        await self._answer(message, _CORPUS_CLEARED_TEXT.format(count=deleted))
 
     async def _owner_or_answer(self, message: Message) -> TelegramUserId | None:
         """Владелец корпуса; без автора — понятная ошибка и ``None`` (ADR-0002)."""
         if message.from_user is None:
             self._logger.info("command_without_author", chat_id=message.chat.id)
-            await message.answer(_NO_AUTHOR_TEXT)
+            await self._answer(message, _NO_AUTHOR_TEXT)
             return None
         return TelegramUserId(message.from_user.id)
 

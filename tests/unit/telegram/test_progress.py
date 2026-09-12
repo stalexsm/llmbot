@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock
 
 import structlog.stdlib
 from aiogram import Bot
+from aiogram.enums import ParseMode
 from aiogram.methods import EditMessageText, SendMessage
 from aiogram.types import Message
 from pytest import MonkeyPatch
@@ -99,3 +100,53 @@ async def test_edit_failure_falls_back_to_new_message(
     assert any(isinstance(method, SendMessage) for method in methods)
     sent = [method for method in methods if isinstance(method, SendMessage)][-1]
     assert "сломалось" in (sent.text or "")
+
+
+async def test_document_name_with_specials_is_escaped_markdown_v2(
+    bot: Bot, monkeypatch: MonkeyPatch, logger: structlog.stdlib.BoundLogger
+) -> None:
+    """Имя документа — пользовательский текст: спецсимволы экранируются."""
+    next_id = {"value": 100}
+
+    async def fake_request(_bot: Bot, method: object, **_kwargs: object) -> Message | None:
+        if isinstance(method, SendMessage):
+            next_id["value"] += 1
+            return Message.model_validate(
+                {
+                    "message_id": next_id["value"],
+                    "date": 1735689600,
+                    "chat": {"id": 100, "type": "private"},
+                    "text": method.text,
+                }
+            ).as_(_bot)
+        return None
+
+    request_mock = AsyncMock(side_effect=fake_request)
+    monkeypatch.setattr(bot.session, "make_request", request_mock)
+    status = make_telegram_message("статус").as_(bot)
+    progress = TelegramIndexProgress(status, "заметки_болт.txt", logger)
+
+    await progress.finish_success(3)
+
+    edit = edits(request_mock)[-1]
+    assert edit.parse_mode == ParseMode.MARKDOWN_V2
+    assert "заметки\\_болт\\.txt" in (edit.text or "")
+
+
+async def test_multipart_error_text_edits_first_part_and_sends_tail(
+    bot: Bot, monkeypatch: MonkeyPatch, logger: structlog.stdlib.BoundLogger
+) -> None:
+    """Текст длиннее лимита: правка — первой частью, хвост — следующим сообщением."""
+    progress, request_mock = make_progress(bot, monkeypatch, logger, min_interval=100.0)
+
+    await progress.finish_error("x" * 5000)
+
+    sent_edits = edits(request_mock)
+    assert len(sent_edits) == 1
+    assert (sent_edits[0].text or "") == "x" * 4000
+    tails = [
+        call.args[1]
+        for call in request_mock.await_args_list
+        if isinstance(call.args[1], SendMessage)
+    ]
+    assert [message.text for message in tails] == ["x" * 1000]
