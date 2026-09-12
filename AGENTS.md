@@ -17,7 +17,7 @@ Route each task to the narrowest source; this is an index, not documentation.
 - `docs/architecture.md` — layer boundaries, DI, cross-layer errors; `docs/code-style.md` — typing and modeling; `docs/runtime.md` — settings, logging, timeouts, secrets.
 - `CONTEXT.md` + `docs/adr/` — domain glossary and decisions; read before exploring an area.
 - `docs/agents/` — issue tracker (GitHub Issues), triage labels, domain-docs workflow.
-- `tests/unit/`, `tests/integration/` — verification; `tests/fakes.py` fakes `InferenceProvider` (no Ollama needed).
+- `tests/unit/`, `tests/integration/`, `tests/live/` — verification; `tests/fakes.py` fakes `InferenceProvider`; live tests (`live` marker) run against real Ollama and skip without it.
 - `skills/<name>/SKILL.md` — the bot's runtime skills; `env.example` — configuration reference.
 
 Example: a layer-boundary change routes to `docs/architecture.md`; a new setting routes to `docs/runtime.md` and `src/bot/config/`.
@@ -38,6 +38,7 @@ Deny by default unless required: `.env`, `.venv/`, `.data/`, caches, build outpu
 - Python style: `NewType` for IDs, frozen dataclasses internally, Pydantic only at config/JSON boundaries, `Protocol` for interfaces — see `docs/code-style.md`.
 - Package manager is `uv` only; `uv.lock` is committed; run everything via `uv run` (bot: `uv run python -m bot.main`).
 - Before finishing, pass all four gates: `uv run ty check`, `uv run ruff check .`, `uv run ruff format --check .`, `uv run pytest`; state exactly what passed.
+- Every commit tied to a ticket references it in the footer: `Closes #N` when the commit completes the ticket, `Part of #N` for partial or spec-level work; commits outside the tracker stay without a reference.
 - Never invent facts, paths, or APIs; ask only when essential information cannot be found safely.
 - A reference doc read once stays in context for the session; do not re-read it.
 - Secrets (bot token) live only in env/`.env`; structlog logs IDs and metrics only — never message contents, commands, or secrets (see `docs/runtime.md`).
